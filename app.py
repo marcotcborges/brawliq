@@ -282,19 +282,22 @@ def _render_ranked(user_id: int, tag: str, since: str | None = None, until: str 
 
 
 def _render_community_meta() -> None:
+    ranked_only = st.toggle("Ranked only", key="meta_ranked_toggle")
     total = get_total_battles_tracked()
     if total < 50:
         st.info(f"Community meta needs more data — {total} battles tracked so far. Share BrawlIQ to grow it!")
         return
 
-    rows = get_community_brawler_stats()
+    rows = get_community_brawler_stats(ranked_only=ranked_only)
     if not rows:
         st.info("No community data yet.")
         return
 
     df = pd.DataFrame([dict(r) for r in rows])
     df.columns = ["Brawler", "Games", "Win Rate %", "Star Rate %", "Pick Rate %"]
-    st.caption(f"Based on **{total:,}** battles tracked across all BrawlIQ users")
+    meta_total = sum(r["games"] for r in rows)
+    label = "ranked battles" if ranked_only else "battles"
+    st.caption(f"Based on **{meta_total:,}** {label} tracked across all BrawlIQ users")
 
     qualified = df[df["Games"] >= 10]
     if not qualified.empty:
@@ -398,9 +401,10 @@ def page_dashboard():
         # ── filters ───────────────────────────────────────────────────────────
         with st.expander("Filters"):
             col_n, col_from, col_to = st.columns(3)
-            n_options = {"Last 25": 25, "Last 50": 50, "Last 100": 100, "Last 200": 200, "All time": None}
-            n_label = col_n.selectbox("Battle history", list(n_options.keys()), index=2, key=f"fn_{selected}")
-            filter_n = n_options[n_label]
+            filter_n = col_n.number_input(
+                "Last N battles (0 = all time)", min_value=0, max_value=10000,
+                value=100, step=25, key=f"fn_{selected}",
+            ) or None
             filter_from = col_from.date_input("From date", value=None, key=f"ff_{selected}")
             filter_to = col_to.date_input("To date", value=None, key=f"ft_{selected}")
 

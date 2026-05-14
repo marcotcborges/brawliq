@@ -367,18 +367,20 @@ def get_battle_results(user_id: int, tag: str, n: int = 500, since: str | None =
         ).fetchall()
 
 
-def get_community_brawler_stats() -> list[sqlite3.Row]:
+def get_community_brawler_stats(ranked_only: bool = False) -> list[sqlite3.Row]:
+    type_filter = "AND type IN ('ranked','soloRanked','teamRanked')" if ranked_only else ""
+    base_filter = f"result IS NOT NULL {type_filter}"
     with get_conn() as conn:
         return conn.execute(
-            """
+            f"""
             SELECT
                 brawler_name,
                 COUNT(*)                                                                  AS games,
                 ROUND(100.0 * SUM(CASE WHEN result='victory' THEN 1 ELSE 0 END) / COUNT(*), 1) AS win_rate,
                 ROUND(100.0 * SUM(is_star_player) / COUNT(*), 1)                         AS star_rate,
-                ROUND(100.0 * COUNT(*) / (SELECT COUNT(*) FROM battles WHERE result IS NOT NULL), 2) AS pick_rate
+                ROUND(100.0 * COUNT(*) / (SELECT COUNT(*) FROM battles WHERE {base_filter}), 2) AS pick_rate
             FROM battles
-            WHERE result IS NOT NULL
+            WHERE {base_filter}
             GROUP BY brawler_name
             ORDER BY games DESC
             """,
