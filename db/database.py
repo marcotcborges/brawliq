@@ -167,7 +167,7 @@ def get_or_create_google_user(google_id: str, email: str, name: str) -> sqlite3.
             raise ValueError("BrawlIQ is currently at capacity. Try again later.")
         username = _unique_username(conn, name, email)
         conn.execute(
-            "INSERT INTO users (username, email, google_id) VALUES (?, ?, ?)",
+            "INSERT INTO users (username, email, google_id, password_hash) VALUES (?, ?, ?, '')",
             (username, email or None, google_id),
         )
         conn.execute("UPDATE users SET last_login_at = datetime('now') WHERE google_id = ?", (google_id,))
