@@ -20,6 +20,7 @@ from db.database import (
     get_brawler_stats,
     get_mode_stats,
     get_battle_results,
+    get_nth_battle_time,
     get_community_brawler_stats,
     get_total_battles_tracked,
     get_active_users,
@@ -149,8 +150,8 @@ def _render_profile(data: dict, fetched_at: str, since: str | None) -> None:
     col3.metric("Duo victories", f"{data.get('duoVictories', 0):,}")
 
 
-def _render_my_stats(user_id: int, tag: str) -> None:
-    results = get_battle_results(user_id, tag, n=500)
+def _render_my_stats(user_id: int, tag: str, since: str | None = None, until: str | None = None) -> None:
+    results = get_battle_results(user_id, tag, n=500, since=since, until=until)
     if not results:
         st.info("No battle data yet — hit **Refresh** to load your recent battles.")
         return
@@ -164,17 +165,19 @@ def _render_my_stats(user_id: int, tag: str) -> None:
 
     st.divider()
 
-    # win streaks
+    wins = sum(1 for r in results if r["result"] == "victory")
+    overall_wr = round(100 * wins / len(results), 1) if results else 0
     current, best = _win_streaks(results)
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Total battles tracked", len(results))
-    col2.metric("Current win streak", current)
-    col3.metric("Best win streak", best)
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Battles tracked", len(results))
+    col2.metric("Overall win rate", f"{overall_wr}%")
+    col3.metric("Current win streak", current)
+    col4.metric("Best win streak", best)
 
     st.divider()
 
     # win rate by mode
-    mode_rows = get_mode_stats(user_id, tag)
+    mode_rows = get_mode_stats(user_id, tag, since=since, until=until)
     if mode_rows:
         st.subheader("Win rate by mode")
         df = pd.DataFrame([dict(r) for r in mode_rows])
@@ -183,9 +186,9 @@ def _render_my_stats(user_id: int, tag: str) -> None:
         st.dataframe(df, use_container_width=True, hide_index=True)
 
 
-def _render_my_brawlers(user_id: int, tag: str) -> None:
+def _render_my_brawlers(user_id: int, tag: str, since: str | None = None, until: str | None = None) -> None:
     ranked_only = st.toggle("Ranked only", key="ranked_toggle")
-    rows = get_brawler_stats(user_id, tag, ranked_only=ranked_only)
+    rows = get_brawler_stats(user_id, tag, ranked_only=ranked_only, since=since, until=until)
 
     if not rows:
         st.info("No battle data yet — hit **Refresh** to load your recent battles.")
@@ -235,8 +238,8 @@ def _render_my_brawlers(user_id: int, tag: str) -> None:
         st.caption("Play at least 5 games with a brawler to unlock podium insights.")
 
 
-def _render_ranked(user_id: int, tag: str) -> None:
-    all_results = get_battle_results(user_id, tag, n=500)
+def _render_ranked(user_id: int, tag: str, since: str | None = None, until: str | None = None) -> None:
+    all_results = get_battle_results(user_id, tag, n=500, since=since, until=until)
     if not all_results:
         st.info("No battle data yet — hit **Refresh** to load your recent battles.")
         return
@@ -266,7 +269,7 @@ def _render_ranked(user_id: int, tag: str) -> None:
 
     st.divider()
 
-    ranked_rows = get_brawler_stats(user_id, tag, ranked_only=True)
+    ranked_rows = get_brawler_stats(user_id, tag, ranked_only=True, since=since, until=until)
     if ranked_rows:
         df = pd.DataFrame([dict(r) for r in ranked_rows])
         df.columns = ["Brawler", "Games", "Win Rate %", "Star Rate %"]
@@ -318,10 +321,11 @@ def page_dashboard():
         logout()
         st.rerun()
     st.sidebar.link_button("☕ Support BrawlIQ", "https://ko-fi.com/martulio", use_container_width=True)
+    st.sidebar.caption("Log in at least once every 30 days to keep automatic data refresh active for your tags.")
 
     st.title("⚡ BrawlIQ")
 
-    tab_profile, tab_meta = st.tabs(["My Profile", "Community Meta"])
+    tab_profile, tab_meta, tab_about = st.tabs(["My Profile", "Community Meta", "How it works"])
 
     with tab_profile:
         st.caption(
@@ -391,29 +395,91 @@ def page_dashboard():
                 except Exception as exc:
                     st.error(f"Could not refresh: {exc}")
 
+        # ── filters ───────────────────────────────────────────────────────────
+        with st.expander("Filters"):
+            col_n, col_from, col_to = st.columns(3)
+            n_options = {"Last 25": 25, "Last 50": 50, "Last 100": 100, "Last 200": 200, "All time": None}
+            n_label = col_n.selectbox("Battle history", list(n_options.keys()), index=2, key=f"fn_{selected}")
+            filter_n = n_options[n_label]
+            filter_from = col_from.date_input("From date", value=None, key=f"ff_{selected}")
+            filter_to = col_to.date_input("To date", value=None, key=f"ft_{selected}")
+
+        # Compute since/until strings for DB queries
+        # Date picker takes precedence over "last N" when set
+        data_since: str | None = None
+        data_until: str | None = str(filter_to) if filter_to else None
+        if filter_from:
+            data_since = str(filter_from)
+        elif filter_n:
+            data_since = get_nth_battle_time(user["id"], selected, filter_n)
+
         sub_profile, sub_stats, sub_brawlers, sub_ranked = st.tabs(
             ["Profile", "Stats", "Brawler Performance", "Ranked"]
         )
 
         with sub_profile:
             snapshot = get_latest_snapshot(user["id"], selected)
-            since = get_earliest_tracking_date(user["id"], selected)
+            tracking_since = get_earliest_tracking_date(user["id"], selected)
             if snapshot:
-                _render_profile(json.loads(snapshot["data"]), snapshot["fetched_at"], since)
+                _render_profile(json.loads(snapshot["data"]), snapshot["fetched_at"], tracking_since)
             else:
                 st.info("Hit **Refresh** to load this player's stats.")
 
         with sub_stats:
-            _render_my_stats(user["id"], selected)
+            _render_my_stats(user["id"], selected, since=data_since, until=data_until)
 
         with sub_brawlers:
-            _render_my_brawlers(user["id"], selected)
+            _render_my_brawlers(user["id"], selected, since=data_since, until=data_until)
 
         with sub_ranked:
-            _render_ranked(user["id"], selected)
+            _render_ranked(user["id"], selected, since=data_since, until=data_until)
 
     with tab_meta:
         _render_community_meta()
+
+    with tab_about:
+        st.markdown("""
+### How does BrawlIQ work?
+
+BrawlIQ is built on top of the official **[Brawl Stars API](https://developer.brawlstars.com)**.
+All stats come directly from Supercell's data — we don't estimate or guess anything.
+
+---
+
+**What is a Player Tag?**
+Your unique Brawl Stars ID (e.g. `#ABC123`). Find it in-game by tapping your profile picture.
+You can track up to 4 tags per account — handy if you play on multiple accounts.
+
+**How often is data refreshed?**
+BrawlIQ fetches fresh data automatically every 30 minutes for all active users.
+You can also hit **Refresh** at any time to pull the latest battles manually.
+
+**How much battle history is available?**
+The Brawl Stars API returns your last 25 battles. BrawlIQ stores every batch it fetches,
+so the longer you're tracked, the more historical data you'll have. Check in regularly to avoid gaps.
+
+**What does "Tracking since" mean?**
+The date BrawlIQ first saw your player tag. Stats and win rates are calculated from all battles collected since that date.
+
+**Do I need to stay active?**
+Yes — if you don't log in for **30 days**, automatic background refresh stops for your tags.
+Log back in and your data will resume being collected.
+
+**What is the Community Meta?**
+Aggregated brawler stats (win rate, pick rate, star rate) across **all** BrawlIQ users.
+The more players use BrawlIQ, the more accurate and representative the meta becomes.
+
+**What does "vs Community" mean in the brawler table?**
+The difference between your personal win rate and the community average for that brawler.
+A positive number means you outperform the average BrawlIQ player with that brawler.
+
+**Is my data private?**
+Your individual battle history is only visible to you. The Community Meta only uses anonymised, aggregated stats.
+
+---
+*BrawlIQ is a fan-made tool and is not affiliated with Supercell.*
+        """)
+
 
 
 # ── router ────────────────────────────────────────────────────────────────────

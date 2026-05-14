@@ -305,8 +305,11 @@ def save_battles(user_id: int, tag: str, battles: list[dict]) -> None:
         )
 
 
-def get_brawler_stats(user_id: int, tag: str, ranked_only: bool = False) -> list[sqlite3.Row]:
+def get_brawler_stats(user_id: int, tag: str, ranked_only: bool = False, since: str | None = None, until: str | None = None) -> list[sqlite3.Row]:
     type_filter = "AND type IN ('ranked','soloRanked','teamRanked')" if ranked_only else ""
+    since_filter = "AND battle_time >= ?" if since else ""
+    until_filter = "AND battle_time <= ?" if until else ""
+    params: list = [user_id, tag] + ([since] if since else []) + ([until] if until else [])
     with get_conn() as conn:
         return conn.execute(
             f"""
@@ -316,36 +319,51 @@ def get_brawler_stats(user_id: int, tag: str, ranked_only: bool = False) -> list
                 ROUND(100.0 * SUM(CASE WHEN result='victory' THEN 1 ELSE 0 END) / COUNT(*), 1) AS win_rate,
                 ROUND(100.0 * SUM(is_star_player) / COUNT(*), 1)                         AS star_rate
             FROM battles
-            WHERE user_id = ? AND tag = ? AND result IS NOT NULL {type_filter}
+            WHERE user_id = ? AND tag = ? AND result IS NOT NULL {type_filter} {since_filter} {until_filter}
             GROUP BY brawler_name
             ORDER BY games DESC
             """,
-            (user_id, tag),
+            params,
         ).fetchall()
 
 
-def get_mode_stats(user_id: int, tag: str) -> list[sqlite3.Row]:
+def get_mode_stats(user_id: int, tag: str, since: str | None = None, until: str | None = None) -> list[sqlite3.Row]:
+    since_filter = "AND battle_time >= ?" if since else ""
+    until_filter = "AND battle_time <= ?" if until else ""
+    params: list = [user_id, tag] + ([since] if since else []) + ([until] if until else [])
     with get_conn() as conn:
         return conn.execute(
-            """
+            f"""
             SELECT
                 mode,
                 COUNT(*) AS games,
                 ROUND(100.0 * SUM(CASE WHEN result='victory' THEN 1 ELSE 0 END) / COUNT(*), 1) AS win_rate
             FROM battles
-            WHERE user_id = ? AND tag = ? AND result IS NOT NULL
+            WHERE user_id = ? AND tag = ? AND result IS NOT NULL {since_filter} {until_filter}
             GROUP BY mode
             ORDER BY games DESC
             """,
-            (user_id, tag),
+            params,
         ).fetchall()
 
 
-def get_battle_results(user_id: int, tag: str, n: int = 500) -> list[sqlite3.Row]:
+def get_nth_battle_time(user_id: int, tag: str, n: int) -> str | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT battle_time FROM battles WHERE user_id = ? AND tag = ? AND result IS NOT NULL ORDER BY battle_time DESC LIMIT 1 OFFSET ?",
+            (user_id, tag, n - 1),
+        ).fetchone()
+        return row["battle_time"] if row else None
+
+
+def get_battle_results(user_id: int, tag: str, n: int = 500, since: str | None = None, until: str | None = None) -> list[sqlite3.Row]:
+    since_clause = "AND battle_time >= ?" if since else ""
+    until_clause = "AND battle_time <= ?" if until else ""
+    params: list = [user_id, tag] + ([since] if since else []) + ([until] if until else []) + [n]
     with get_conn() as conn:
         return conn.execute(
-            "SELECT result, type FROM battles WHERE user_id = ? AND tag = ? AND result IS NOT NULL ORDER BY battle_time DESC LIMIT ?",
-            (user_id, tag, n),
+            f"SELECT result, type, battle_time FROM battles WHERE user_id = ? AND tag = ? AND result IS NOT NULL {since_clause} {until_clause} ORDER BY battle_time DESC LIMIT ?",
+            params,
         ).fetchall()
 
 
