@@ -1,0 +1,8 @@
+.venv/
+.git/
+.env
+brawliq.db
+__pycache__/
+*.pyc
+.DS_Store
+*.md
