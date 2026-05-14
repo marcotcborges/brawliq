@@ -1,8 +1,11 @@
 import sqlite3
 import os
+from datetime import datetime, timedelta
 
-_DATA_DIR = os.getenv("DATA_DIR", os.path.join(os.path.dirname(__file__), ".."))
-DB_PATH = os.path.join(_DATA_DIR, "brawliq.db")
+DB_PATH = os.path.join(
+    os.getenv("DATA_DIR", os.path.join(os.path.dirname(__file__), "..")),
+    "brawliq.db",
+)
 MAX_TAGS_PER_USER = 4
 
 
@@ -16,18 +19,21 @@ def init_db() -> None:
     with get_conn() as conn:
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS users (
-                id            INTEGER PRIMARY KEY AUTOINCREMENT,
-                username      TEXT    NOT NULL UNIQUE,
-                password_hash TEXT    NOT NULL,
-                player_tag    TEXT,
-                created_at    TEXT    NOT NULL DEFAULT (datetime('now')),
-                last_login_at TEXT
+                id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+                username             TEXT    NOT NULL UNIQUE,
+                password_hash        TEXT    NOT NULL,
+                email                TEXT,
+                reset_token          TEXT,
+                reset_token_expires  TEXT,
+                player_tag           TEXT,
+                created_at           TEXT    NOT NULL DEFAULT (datetime('now')),
+                last_login_at        TEXT
             );
 
             CREATE TABLE IF NOT EXISTS player_tags (
-                id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id    INTEGER NOT NULL REFERENCES users(id),
-                tag        TEXT    NOT NULL,
+                id       INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id  INTEGER NOT NULL REFERENCES users(id),
+                tag      TEXT    NOT NULL,
                 UNIQUE(user_id, tag)
             );
 
@@ -45,6 +51,7 @@ def init_db() -> None:
                 tag            TEXT    NOT NULL,
                 battle_time    TEXT    NOT NULL,
                 mode           TEXT,
+                type           TEXT,
                 map            TEXT,
                 result         TEXT,
                 brawler_name   TEXT,
@@ -52,10 +59,17 @@ def init_db() -> None:
                 UNIQUE(tag, battle_time)
             );
         """)
-        try:
-            conn.execute("ALTER TABLE player_snapshots ADD COLUMN tag TEXT")
-        except Exception:
-            pass
+        for stmt in [
+            "ALTER TABLE player_snapshots ADD COLUMN tag TEXT",
+            "ALTER TABLE battles ADD COLUMN type TEXT",
+            "ALTER TABLE users ADD COLUMN email TEXT",
+            "ALTER TABLE users ADD COLUMN reset_token TEXT",
+            "ALTER TABLE users ADD COLUMN reset_token_expires TEXT",
+        ]:
+            try:
+                conn.execute(stmt)
+            except Exception:
+                pass
         conn.execute("""
             INSERT OR IGNORE INTO player_tags (user_id, tag)
             SELECT id, player_tag FROM users WHERE player_tag IS NOT NULL
@@ -64,11 +78,11 @@ def init_db() -> None:
 
 # --- user helpers ---
 
-def create_user(username: str, password_hash: str) -> int:
+def create_user(username: str, password_hash: str, email: str = "") -> int:
     with get_conn() as conn:
         cur = conn.execute(
-            "INSERT INTO users (username, password_hash) VALUES (?, ?)",
-            (username, password_hash),
+            "INSERT INTO users (username, password_hash, email) VALUES (?, ?, ?)",
+            (username, password_hash, email or None),
         )
         return cur.lastrowid
 
@@ -91,6 +105,38 @@ def update_last_login(user_id: int) -> None:
 def get_user_count() -> int:
     with get_conn() as conn:
         return conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+
+
+# --- password reset ---
+
+def set_reset_token(username: str, email: str, token: str) -> bool:
+    """Set a reset token if username+email match. Returns False if no match."""
+    expires = (datetime.utcnow() + timedelta(minutes=30)).strftime("%Y-%m-%d %H:%M:%S")
+    with get_conn() as conn:
+        cur = conn.execute(
+            """UPDATE users SET reset_token = ?, reset_token_expires = ?
+               WHERE LOWER(username) = LOWER(?) AND LOWER(email) = LOWER(?)""",
+            (token, expires, username, email),
+        )
+        return cur.rowcount > 0
+
+
+def get_user_by_reset_token(token: str) -> sqlite3.Row | None:
+    with get_conn() as conn:
+        return conn.execute(
+            """SELECT * FROM users
+               WHERE reset_token = ?
+                 AND reset_token_expires > datetime('now')""",
+            (token,),
+        ).fetchone()
+
+
+def update_password(user_id: int, password_hash: str) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE users SET password_hash = ?, reset_token = NULL, reset_token_expires = NULL WHERE id = ?",
+            (password_hash, user_id),
+        )
 
 
 # --- player tag helpers ---
@@ -138,14 +184,18 @@ def save_snapshot(user_id: int, tag: str, data: str) -> None:
 def get_latest_snapshot(user_id: int, tag: str) -> sqlite3.Row | None:
     with get_conn() as conn:
         return conn.execute(
-            """
-            SELECT * FROM player_snapshots
-            WHERE user_id = ? AND tag = ?
-            ORDER BY fetched_at DESC
-            LIMIT 1
-            """,
+            "SELECT * FROM player_snapshots WHERE user_id = ? AND tag = ? ORDER BY fetched_at DESC LIMIT 1",
             (user_id, tag),
         ).fetchone()
+
+
+def get_earliest_tracking_date(user_id: int, tag: str) -> str | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT MIN(fetched_at) AS since FROM player_snapshots WHERE user_id = ? AND tag = ?",
+            (user_id, tag),
+        ).fetchone()
+        return row["since"] if row else None
 
 
 # --- battle helpers ---
@@ -155,13 +205,13 @@ def save_battles(user_id: int, tag: str, battles: list[dict]) -> None:
         conn.executemany(
             """
             INSERT OR IGNORE INTO battles
-                (user_id, tag, battle_time, mode, map, result, brawler_name, is_star_player)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (user_id, tag, battle_time, mode, type, map, result, brawler_name, is_star_player)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
                     user_id, tag,
-                    b["battle_time"], b["mode"], b.get("map", ""),
+                    b["battle_time"], b["mode"], b.get("type"), b.get("map", ""),
                     b["result"], b["brawler_name"], int(b["is_star_player"]),
                 )
                 for b in battles
@@ -169,21 +219,47 @@ def save_battles(user_id: int, tag: str, battles: list[dict]) -> None:
         )
 
 
-def get_brawler_stats(user_id: int, tag: str) -> list[sqlite3.Row]:
+def get_brawler_stats(user_id: int, tag: str, ranked_only: bool = False) -> list[sqlite3.Row]:
+    type_filter = "AND type IN ('ranked','soloRanked','teamRanked')" if ranked_only else ""
     with get_conn() as conn:
         return conn.execute(
-            """
+            f"""
             SELECT
                 brawler_name,
-                COUNT(*)                                                        AS games,
-                ROUND(100.0 * SUM(CASE WHEN result = 'victory' THEN 1 ELSE 0 END) / COUNT(*), 1) AS win_rate,
-                ROUND(100.0 * SUM(is_star_player) / COUNT(*), 1)               AS star_rate
+                COUNT(*)                                                                  AS games,
+                ROUND(100.0 * SUM(CASE WHEN result='victory' THEN 1 ELSE 0 END) / COUNT(*), 1) AS win_rate,
+                ROUND(100.0 * SUM(is_star_player) / COUNT(*), 1)                         AS star_rate
             FROM battles
-            WHERE user_id = ? AND tag = ? AND result IS NOT NULL
+            WHERE user_id = ? AND tag = ? AND result IS NOT NULL {type_filter}
             GROUP BY brawler_name
             ORDER BY games DESC
             """,
             (user_id, tag),
+        ).fetchall()
+
+
+def get_mode_stats(user_id: int, tag: str) -> list[sqlite3.Row]:
+    with get_conn() as conn:
+        return conn.execute(
+            """
+            SELECT
+                mode,
+                COUNT(*) AS games,
+                ROUND(100.0 * SUM(CASE WHEN result='victory' THEN 1 ELSE 0 END) / COUNT(*), 1) AS win_rate
+            FROM battles
+            WHERE user_id = ? AND tag = ? AND result IS NOT NULL
+            GROUP BY mode
+            ORDER BY games DESC
+            """,
+            (user_id, tag),
+        ).fetchall()
+
+
+def get_battle_results(user_id: int, tag: str, n: int = 500) -> list[sqlite3.Row]:
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT result, type FROM battles WHERE user_id = ? AND tag = ? AND result IS NOT NULL ORDER BY battle_time DESC LIMIT ?",
+            (user_id, tag, n),
         ).fetchall()
 
 
@@ -193,9 +269,9 @@ def get_community_brawler_stats() -> list[sqlite3.Row]:
             """
             SELECT
                 brawler_name,
-                COUNT(*)                                                        AS games,
-                ROUND(100.0 * SUM(CASE WHEN result = 'victory' THEN 1 ELSE 0 END) / COUNT(*), 1) AS win_rate,
-                ROUND(100.0 * SUM(is_star_player) / COUNT(*), 1)               AS star_rate,
+                COUNT(*)                                                                  AS games,
+                ROUND(100.0 * SUM(CASE WHEN result='victory' THEN 1 ELSE 0 END) / COUNT(*), 1) AS win_rate,
+                ROUND(100.0 * SUM(is_star_player) / COUNT(*), 1)                         AS star_rate,
                 ROUND(100.0 * COUNT(*) / (SELECT COUNT(*) FROM battles WHERE result IS NOT NULL), 2) AS pick_rate
             FROM battles
             WHERE result IS NOT NULL
@@ -212,10 +288,7 @@ def get_total_battles_tracked() -> int:
         ).fetchone()[0]
 
 
-# --- cron helpers ---
-
 def get_active_users(inactive_days: int = 30) -> list[sqlite3.Row]:
-    """Return one row per (user, tag) for users active within inactive_days."""
     with get_conn() as conn:
         return conn.execute(
             """

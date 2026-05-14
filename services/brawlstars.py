@@ -84,6 +84,7 @@ def parse_battlelog(battlelog: dict, player_tag: str) -> list[dict]:
             parsed.append({
                 "battle_time": battle_time,
                 "mode": mode,
+                "type": battle.get("type"),
                 "map": event.get("map", ""),
                 "result": result,
                 "brawler_name": brawler_name,
