@@ -7,6 +7,7 @@ import streamlit as st
 from db.database import (
     MAX_TAGS_PER_USER,
     init_db,
+    get_user_by_username,
     update_last_login,
     get_player_tags,
     add_player_tag,
