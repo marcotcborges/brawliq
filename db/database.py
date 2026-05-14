@@ -7,6 +7,7 @@ DB_PATH = os.path.join(
     "brawliq.db",
 )
 MAX_TAGS_PER_USER = 4
+MAX_TOTAL_TAGS = 200
 
 
 def get_conn() -> sqlite3.Connection:
@@ -218,10 +219,13 @@ def get_player_tags(user_id: int) -> list[sqlite3.Row]:
 
 def add_player_tag(user_id: int, tag: str) -> bool:
     with get_conn() as conn:
-        count = conn.execute(
+        per_user = conn.execute(
             "SELECT COUNT(*) FROM player_tags WHERE user_id = ?", (user_id,)
         ).fetchone()[0]
-        if count >= MAX_TAGS_PER_USER:
+        if per_user >= MAX_TAGS_PER_USER:
+            return False
+        total = conn.execute("SELECT COUNT(*) FROM player_tags").fetchone()[0]
+        if total >= MAX_TOTAL_TAGS:
             return False
         conn.execute(
             "INSERT OR IGNORE INTO player_tags (user_id, tag) VALUES (?, ?)",

@@ -6,6 +6,7 @@ import pandas as pd
 import streamlit as st
 from db.database import (
     MAX_TAGS_PER_USER,
+    MAX_TOTAL_TAGS,
     init_db,
     get_user_by_username,
     update_last_login,
@@ -322,6 +323,11 @@ def page_dashboard():
     tab_profile, tab_meta = st.tabs(["My Profile", "Community Meta"])
 
     with tab_profile:
+        st.caption(
+            "A **Player Tag** is the unique ID of a Brawl Stars account (e.g. #ABC123). "
+            "You can find it in-game by tapping your profile. "
+            f"Each account can track up to **{MAX_TAGS_PER_USER} tags** — useful if you play on multiple accounts."
+        )
         if len(tags) < MAX_TAGS_PER_USER:
             with st.form("add_tag_form"):
                 new_tag = st.text_input(
@@ -338,7 +344,7 @@ def page_dashboard():
                         try:
                             _fetch_and_store(user["id"], tag)
                             if not add_player_tag(user["id"], tag):
-                                st.error(f"You can have a maximum of {MAX_TAGS_PER_USER} player tags.")
+                                st.error(f"You can have a maximum of {MAX_TAGS_PER_USER} player tags, or BrawlIQ has reached its tracking capacity for now.")
                             else:
                                 st.session_state.selected_tag = tag
                                 st.rerun()
