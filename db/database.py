@@ -405,3 +405,107 @@ def get_active_users(inactive_days: int = 30) -> list[sqlite3.Row]:
             """,
             (f"-{inactive_days}",),
         ).fetchall()
+
+
+# ── insights queries ──────────────────────────────────────────────────────────
+
+def get_map_stats(user_id: int, tag: str, since: str | None = None, until: str | None = None) -> list[sqlite3.Row]:
+    since_f = "AND battle_time >= ?" if since else ""
+    until_f = "AND battle_time <= ?" if until else ""
+    params: list = [user_id, tag] + ([since] if since else []) + ([until] if until else [])
+    with get_conn() as conn:
+        return conn.execute(
+            f"""
+            SELECT
+                map,
+                mode,
+                COUNT(*) AS games,
+                ROUND(100.0 * SUM(CASE WHEN result='victory' THEN 1 ELSE 0 END) / COUNT(*), 1) AS win_rate,
+                ROUND(100.0 * SUM(is_star_player) / COUNT(*), 1) AS star_rate
+            FROM battles
+            WHERE user_id = ? AND tag = ? AND result IS NOT NULL AND map != '' {since_f} {until_f}
+            GROUP BY map, mode
+            ORDER BY games DESC
+            """,
+            params,
+        ).fetchall()
+
+
+def get_weekly_stats(user_id: int, tag: str, since: str | None = None, until: str | None = None) -> list[sqlite3.Row]:
+    since_f = "AND battle_time >= ?" if since else ""
+    until_f = "AND battle_time <= ?" if until else ""
+    params: list = [user_id, tag] + ([since] if since else []) + ([until] if until else [])
+    with get_conn() as conn:
+        return conn.execute(
+            f"""
+            SELECT
+                strftime('%Y-W%W',
+                    substr(battle_time,1,4)||'-'||substr(battle_time,5,2)||'-'||substr(battle_time,7,2)
+                ) AS week,
+                COUNT(*) AS games,
+                ROUND(100.0 * SUM(CASE WHEN result='victory' THEN 1 ELSE 0 END) / COUNT(*), 1) AS win_rate
+            FROM battles
+            WHERE user_id = ? AND tag = ? AND result IS NOT NULL {since_f} {until_f}
+            GROUP BY week
+            ORDER BY week ASC
+            """,
+            params,
+        ).fetchall()
+
+
+def get_hourly_stats(user_id: int, tag: str, since: str | None = None, until: str | None = None) -> list[sqlite3.Row]:
+    since_f = "AND battle_time >= ?" if since else ""
+    until_f = "AND battle_time <= ?" if until else ""
+    params: list = [user_id, tag] + ([since] if since else []) + ([until] if until else [])
+    with get_conn() as conn:
+        return conn.execute(
+            f"""
+            SELECT
+                CAST(substr(battle_time, 10, 2) AS INTEGER) AS hour,
+                COUNT(*) AS games,
+                ROUND(100.0 * SUM(CASE WHEN result='victory' THEN 1 ELSE 0 END) / COUNT(*), 1) AS win_rate
+            FROM battles
+            WHERE user_id = ? AND tag = ? AND result IS NOT NULL {since_f} {until_f}
+            GROUP BY hour
+            ORDER BY hour ASC
+            """,
+            params,
+        ).fetchall()
+
+
+def get_weekday_stats(user_id: int, tag: str, since: str | None = None, until: str | None = None) -> list[sqlite3.Row]:
+    since_f = "AND battle_time >= ?" if since else ""
+    until_f = "AND battle_time <= ?" if until else ""
+    params: list = [user_id, tag] + ([since] if since else []) + ([until] if until else [])
+    with get_conn() as conn:
+        return conn.execute(
+            f"""
+            SELECT
+                CAST(strftime('%w',
+                    substr(battle_time,1,4)||'-'||substr(battle_time,5,2)||'-'||substr(battle_time,7,2)
+                ) AS INTEGER) AS dow,
+                COUNT(*) AS games,
+                ROUND(100.0 * SUM(CASE WHEN result='victory' THEN 1 ELSE 0 END) / COUNT(*), 1) AS win_rate
+            FROM battles
+            WHERE user_id = ? AND tag = ? AND result IS NOT NULL {since_f} {until_f}
+            GROUP BY dow
+            ORDER BY dow ASC
+            """,
+            params,
+        ).fetchall()
+
+
+def get_battles_for_analysis(user_id: int, tag: str, since: str | None = None, until: str | None = None) -> list[sqlite3.Row]:
+    since_f = "AND battle_time >= ?" if since else ""
+    until_f = "AND battle_time <= ?" if until else ""
+    params: list = [user_id, tag] + ([since] if since else []) + ([until] if until else [])
+    with get_conn() as conn:
+        return conn.execute(
+            f"""
+            SELECT result, battle_time, brawler_name, mode, type
+            FROM battles
+            WHERE user_id = ? AND tag = ? AND result IS NOT NULL {since_f} {until_f}
+            ORDER BY battle_time ASC
+            """,
+            params,
+        ).fetchall()

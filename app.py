@@ -2,6 +2,7 @@ import json
 import os
 import threading
 import time
+from datetime import datetime
 import pandas as pd
 import streamlit as st
 from db.database import (
@@ -21,6 +22,11 @@ from db.database import (
     get_mode_stats,
     get_battle_results,
     get_nth_battle_time,
+    get_map_stats,
+    get_weekly_stats,
+    get_hourly_stats,
+    get_weekday_stats,
+    get_battles_for_analysis,
     get_community_brawler_stats,
     get_total_battles_tracked,
     get_active_users,
@@ -313,6 +319,149 @@ def _render_community_meta() -> None:
     st.dataframe(df, use_container_width=True, hide_index=True)
 
 
+# ── insights ─────────────────────────────────────────────────────────────────
+
+def _parse_battle_time(bt: str) -> datetime | None:
+    try:
+        return datetime.strptime(bt[:15], "%Y%m%dT%H%M%S")
+    except Exception:
+        return None
+
+
+def _render_insights(user_id: int, tag: str, since: str | None = None, until: str | None = None) -> None:
+    # ── map performance ───────────────────────────────────────────────────────
+    st.subheader("Map performance")
+    map_rows = get_map_stats(user_id, tag, since=since, until=until)
+    if map_rows:
+        df = pd.DataFrame([dict(r) for r in map_rows])
+        df.columns = ["Map", "Mode", "Games", "Win Rate %", "Star Rate %"]
+        df["Mode"] = df["Mode"].str.replace(r"([A-Z])", r" \1", regex=True).str.strip().str.title()
+        qualified = df[df["Games"] >= 3]
+        if not qualified.empty:
+            best_map = qualified.loc[qualified["Win Rate %"].idxmax()]
+            worst_map = qualified.loc[qualified["Win Rate %"].idxmin()]
+            col1, col2 = st.columns(2)
+            col1.success(f"**Best map:** {best_map['Map']} — {best_map['Win Rate %']}% ({int(best_map['Games'])} games)")
+            col2.error(f"**Worst map:** {worst_map['Map']} — {worst_map['Win Rate %']}% ({int(worst_map['Games'])} games)")
+        st.dataframe(df, use_container_width=True, hide_index=True)
+    else:
+        st.info("No map data yet — hit **Refresh** to load battles.")
+
+    st.divider()
+
+    # ── win rate trend ────────────────────────────────────────────────────────
+    st.subheader("Win rate trend")
+    week_rows = get_weekly_stats(user_id, tag, since=since, until=until)
+    if week_rows:
+        wdf = pd.DataFrame([dict(r) for r in week_rows])
+        wdf.columns = ["Week", "Games", "Win Rate %"]
+        wdf = wdf[wdf["Games"] >= 3]
+        if len(wdf) >= 2:
+            st.line_chart(wdf.set_index("Week")["Win Rate %"])
+            st.caption("Weekly win rate — weeks with fewer than 3 battles are excluded")
+        else:
+            st.info("Need at least 2 weeks with 3+ battles for the trend chart.")
+    else:
+        st.info("Not enough battle history for trend analysis.")
+
+    st.divider()
+
+    # ── best time to play ─────────────────────────────────────────────────────
+    st.subheader("Best time to play")
+    hour_rows = get_hourly_stats(user_id, tag, since=since, until=until)
+    day_rows = get_weekday_stats(user_id, tag, since=since, until=until)
+
+    if hour_rows:
+        hdf = pd.DataFrame([dict(r) for r in hour_rows])
+        hdf.columns = ["Hour", "Games", "Win Rate %"]
+        hdf = hdf[hdf["Games"] >= 3]
+        if not hdf.empty:
+            best_h = hdf.loc[hdf["Win Rate %"].idxmax()]
+            worst_h = hdf.loc[hdf["Win Rate %"].idxmin()]
+            col1, col2 = st.columns(2)
+            col1.success(f"**Best hour:** {int(best_h['Hour']):02d}:00 UTC — {best_h['Win Rate %']}%")
+            col2.error(f"**Worst hour:** {int(worst_h['Hour']):02d}:00 UTC — {worst_h['Win Rate %']}%")
+            st.bar_chart(hdf.set_index("Hour")["Win Rate %"])
+            st.caption("Win rate by hour of day (UTC) — hours with fewer than 3 battles excluded")
+
+    if day_rows:
+        day_names = {0: "Sun", 1: "Mon", 2: "Tue", 3: "Wed", 4: "Thu", 5: "Fri", 6: "Sat"}
+        ddf = pd.DataFrame([dict(r) for r in day_rows])
+        ddf.columns = ["DOW", "Games", "Win Rate %"]
+        ddf["Day"] = ddf["DOW"].apply(lambda x: day_names.get(x, str(x)))
+        ddf = ddf[ddf["Games"] >= 3]
+        if not ddf.empty:
+            best_d = ddf.loc[ddf["Win Rate %"].idxmax()]
+            worst_d = ddf.loc[ddf["Win Rate %"].idxmin()]
+            col1, col2 = st.columns(2)
+            col1.success(f"**Best day:** {best_d['Day']} — {best_d['Win Rate %']}%")
+            col2.error(f"**Worst day:** {worst_d['Day']} — {worst_d['Win Rate %']}%")
+            st.bar_chart(ddf.set_index("Day")["Win Rate %"])
+
+    if not hour_rows and not day_rows:
+        st.info("Not enough data for time analysis.")
+
+    st.divider()
+
+    # ── session analysis ──────────────────────────────────────────────────────
+    st.subheader("Session analysis")
+    battles = get_battles_for_analysis(user_id, tag, since=since, until=until)
+    if len(battles) < 5:
+        st.info("Need at least 5 battles for session analysis.")
+        return
+
+    sessions: list[list[dict]] = []
+    current: list[dict] = []
+    prev_t: datetime | None = None
+    for b in battles:
+        t = _parse_battle_time(b["battle_time"])
+        if t is None:
+            continue
+        if prev_t and (t - prev_t).total_seconds() > 1800:
+            if current:
+                sessions.append(current)
+            current = []
+        current.append({"result": b["result"]})
+        prev_t = t
+    if current:
+        sessions.append(current)
+
+    if not sessions:
+        return
+
+    tilt_sessions = 0
+    rows_data = []
+    for i, s in enumerate(sessions):
+        wins = sum(1 for b in s if b["result"] == "victory")
+        wr = round(100 * wins / len(s), 1)
+        max_loss = curr_loss = 0
+        for b in s:
+            curr_loss = curr_loss + 1 if b["result"] != "victory" else 0
+            max_loss = max(max_loss, curr_loss)
+        tilt = max_loss >= 4
+        if tilt:
+            tilt_sessions += 1
+        rows_data.append({
+            "Session": f"#{len(sessions) - i}",
+            "Games": len(s),
+            "Win Rate %": wr,
+            "Max Loss Streak": max_loss,
+            "Status": "⚠️ Tilt" if tilt else "✅ OK",
+        })
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Total sessions", len(sessions))
+    col2.metric("Avg games / session", round(len(battles) / len(sessions), 1))
+    col3.metric("Tilt sessions", tilt_sessions)
+
+    if tilt_sessions:
+        st.warning(f"**{tilt_sessions} session(s)** ended with a losing streak of 4+. Consider taking a break when it hits!")
+
+    sdf = pd.DataFrame(rows_data[:20])
+    st.dataframe(sdf, use_container_width=True, hide_index=True)
+    st.caption("A session = battles within 30 min of each other. Showing last 20 sessions.")
+
+
 # ── dashboard ─────────────────────────────────────────────────────────────────
 
 def page_dashboard():
@@ -408,17 +557,17 @@ def page_dashboard():
             filter_from = col_from.date_input("From date", value=None, key=f"ff_{selected}")
             filter_to = col_to.date_input("To date", value=None, key=f"ft_{selected}")
 
-        # Compute since/until strings for DB queries
-        # Date picker takes precedence over "last N" when set
+        # Compute since/until in battle_time format (YYYYMMDDTHHmmss.sssZ)
+        # Date picker produces "YYYY-MM-DD" which compares wrong against stored format.
         data_since: str | None = None
-        data_until: str | None = str(filter_to) if filter_to else None
+        data_until: str | None = str(filter_to).replace("-", "") + "T235959.999Z" if filter_to else None
         if filter_from:
-            data_since = str(filter_from)
+            data_since = str(filter_from).replace("-", "") + "T000000.000Z"
         elif filter_n:
             data_since = get_nth_battle_time(user["id"], selected, filter_n)
 
-        sub_profile, sub_stats, sub_brawlers, sub_ranked = st.tabs(
-            ["Profile", "Stats", "Brawler Performance", "Ranked"]
+        sub_profile, sub_stats, sub_brawlers, sub_ranked, sub_insights = st.tabs(
+            ["Profile", "Stats", "Brawler Performance", "Ranked", "Insights"]
         )
 
         with sub_profile:
@@ -437,6 +586,9 @@ def page_dashboard():
 
         with sub_ranked:
             _render_ranked(user["id"], selected, since=data_since, until=data_until)
+
+        with sub_insights:
+            _render_insights(user["id"], selected, since=data_since, until=data_until)
 
     with tab_meta:
         _render_community_meta()
