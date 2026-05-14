@@ -66,7 +66,7 @@ def init_db() -> None:
             "ALTER TABLE users ADD COLUMN email TEXT",
             "ALTER TABLE users ADD COLUMN reset_token TEXT",
             "ALTER TABLE users ADD COLUMN reset_token_expires TEXT",
-            "ALTER TABLE player_tags ADD COLUMN first_seen_at TEXT NOT NULL DEFAULT (datetime('now'))",
+            "ALTER TABLE player_tags ADD COLUMN first_seen_at TEXT",
         ]:
             try:
                 conn.execute(stmt)
@@ -201,7 +201,14 @@ def get_earliest_tracking_date(user_id: int, tag: str) -> str | None:
             "SELECT first_seen_at FROM player_tags WHERE user_id = ? AND tag = ?",
             (user_id, tag),
         ).fetchone()
-        return row["first_seen_at"] if row else None
+        if row and row["first_seen_at"]:
+            return row["first_seen_at"]
+        # fallback for rows added before the first_seen_at column existed
+        row = conn.execute(
+            "SELECT MIN(battle_time) AS since FROM battles WHERE user_id = ? AND tag = ?",
+            (user_id, tag),
+        ).fetchone()
+        return row["since"] if row else None
 
 
 # --- battle helpers ---
