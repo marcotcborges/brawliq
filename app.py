@@ -29,6 +29,15 @@ MAX_USERS = 100
 init_db()
 
 
+def _log_outbound_ip():
+    try:
+        import urllib.request
+        ip = urllib.request.urlopen("https://ifconfig.me", timeout=5).read().decode()
+        print(f"[BrawlIQ] outbound IP: {ip}")
+    except Exception:
+        pass
+
+
 def _background_scheduler():
     while True:
         time.sleep(30 * 60)
@@ -47,6 +56,7 @@ def _background_scheduler():
 
 
 threading.Thread(target=_background_scheduler, daemon=True).start()
+threading.Thread(target=_log_outbound_ip, daemon=True).start()
 
 st.set_page_config(page_title="BrawlIQ", page_icon="⚡", layout="centered")
 
