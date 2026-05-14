@@ -57,7 +57,7 @@ def init_db() -> None:
                 result         TEXT,
                 brawler_name   TEXT,
                 is_star_player INTEGER NOT NULL DEFAULT 0,
-                UNIQUE(tag, battle_time)
+                UNIQUE(user_id, tag, battle_time)
             );
         """)
         for stmt in [
@@ -76,6 +76,32 @@ def init_db() -> None:
             INSERT OR IGNORE INTO player_tags (user_id, tag)
             SELECT id, player_tag FROM users WHERE player_tag IS NOT NULL
         """)
+        # migrate battles unique constraint from (tag, battle_time) to (user_id, tag, battle_time)
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='battles'"
+        ).fetchone()
+        if row and "user_id, tag, battle_time" not in row["sql"]:
+            conn.executescript("""
+                CREATE TABLE battles_new (
+                    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id        INTEGER NOT NULL REFERENCES users(id),
+                    tag            TEXT    NOT NULL,
+                    battle_time    TEXT    NOT NULL,
+                    mode           TEXT,
+                    type           TEXT,
+                    map            TEXT,
+                    result         TEXT,
+                    brawler_name   TEXT,
+                    is_star_player INTEGER NOT NULL DEFAULT 0,
+                    UNIQUE(user_id, tag, battle_time)
+                );
+                INSERT OR IGNORE INTO battles_new
+                    (id, user_id, tag, battle_time, mode, type, map, result, brawler_name, is_star_player)
+                SELECT id, user_id, tag, battle_time, mode, type, map, result, brawler_name, is_star_player
+                FROM battles;
+                DROP TABLE battles;
+                ALTER TABLE battles_new RENAME TO battles;
+            """)
 
 
 # --- user helpers ---
@@ -220,7 +246,7 @@ def save_battles(user_id: int, tag: str, battles: list[dict]) -> None:
             INSERT INTO battles
                 (user_id, tag, battle_time, mode, type, map, result, brawler_name, is_star_player)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(tag, battle_time) DO UPDATE SET
+            ON CONFLICT(user_id, tag, battle_time) DO UPDATE SET
                 type = excluded.type
             WHERE battles.type IS NULL
             """,
