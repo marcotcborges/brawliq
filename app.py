@@ -27,6 +27,7 @@ from db.database import (
 )
 from services.brawlstars import get_player, get_player_battlelog, parse_battlelog
 from services.google_auth import get_auth_url, exchange_code
+from services.email import notify_admin
 
 APP_URL = os.getenv("APP_URL", "http://localhost:8501")
 
@@ -346,6 +347,11 @@ def page_dashboard():
                             if not add_player_tag(user["id"], tag):
                                 st.error(f"You can have a maximum of {MAX_TAGS_PER_USER} player tags, or BrawlIQ has reached its tracking capacity for now.")
                             else:
+                                threading.Thread(
+                                    target=notify_admin,
+                                    args=("Player tag added", f"User: {user['username']}\nTag: {tag}"),
+                                    daemon=True,
+                                ).start()
                                 st.session_state.selected_tag = tag
                                 st.rerun()
                         except ValueError as exc:
@@ -418,9 +424,15 @@ if oauth_code and st.session_state.user_id is None:
     with st.spinner("Signing you in…"):
         try:
             info = exchange_code(oauth_code)
-            user = get_or_create_google_user(info["sub"], info.get("email", ""), info.get("name", ""))
+            user, is_new = get_or_create_google_user(info["sub"], info.get("email", ""), info.get("name", ""))
             st.session_state.user_id = user["id"]
             st.session_state.username = user["username"]
+            if is_new:
+                threading.Thread(
+                    target=notify_admin,
+                    args=("New user signed up", f"Username: {user['username']}\nEmail: {info.get('email', '—')}\nGoogle name: {info.get('name', '—')}"),
+                    daemon=True,
+                ).start()
             st.rerun()
         except ValueError as exc:
             st.error(str(exc))

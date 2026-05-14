@@ -152,18 +152,19 @@ def _unique_username(conn: sqlite3.Connection, name: str, email: str) -> str:
 MAX_USERS = 100
 
 
-def get_or_create_google_user(google_id: str, email: str, name: str) -> sqlite3.Row:
+def get_or_create_google_user(google_id: str, email: str, name: str) -> tuple[sqlite3.Row, bool]:
+    """Returns (user_row, is_new_user)."""
     with get_conn() as conn:
         user = conn.execute("SELECT * FROM users WHERE google_id = ?", (google_id,)).fetchone()
         if user:
             conn.execute("UPDATE users SET last_login_at = datetime('now') WHERE id = ?", (user["id"],))
-            return conn.execute("SELECT * FROM users WHERE id = ?", (user["id"],)).fetchone()
+            return conn.execute("SELECT * FROM users WHERE id = ?", (user["id"],)).fetchone(), False
         user = conn.execute(
             "SELECT * FROM users WHERE LOWER(email) = LOWER(?)", (email,)
         ).fetchone()
         if user:
             conn.execute("UPDATE users SET google_id = ?, last_login_at = datetime('now') WHERE id = ?", (google_id, user["id"]))
-            return conn.execute("SELECT * FROM users WHERE id = ?", (user["id"],)).fetchone()
+            return conn.execute("SELECT * FROM users WHERE id = ?", (user["id"],)).fetchone(), False
         if conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] >= MAX_USERS:
             raise ValueError("BrawlIQ is currently at capacity. Try again later.")
         username = _unique_username(conn, name, email)
@@ -172,7 +173,7 @@ def get_or_create_google_user(google_id: str, email: str, name: str) -> sqlite3.
             (username, email or None, google_id),
         )
         conn.execute("UPDATE users SET last_login_at = datetime('now') WHERE google_id = ?", (google_id,))
-        return conn.execute("SELECT * FROM users WHERE google_id = ?", (google_id,)).fetchone()
+        return conn.execute("SELECT * FROM users WHERE google_id = ?", (google_id,)).fetchone(), True
 
 
 # --- password reset ---
