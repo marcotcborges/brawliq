@@ -210,9 +210,12 @@ def save_battles(user_id: int, tag: str, battles: list[dict]) -> None:
     with get_conn() as conn:
         conn.executemany(
             """
-            INSERT OR IGNORE INTO battles
+            INSERT INTO battles
                 (user_id, tag, battle_time, mode, type, map, result, brawler_name, is_star_player)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(tag, battle_time) DO UPDATE SET
+                type = excluded.type
+            WHERE battles.type IS NULL
             """,
             [
                 (
