@@ -31,9 +31,10 @@ def init_db() -> None:
             );
 
             CREATE TABLE IF NOT EXISTS player_tags (
-                id       INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id  INTEGER NOT NULL REFERENCES users(id),
-                tag      TEXT    NOT NULL,
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id       INTEGER NOT NULL REFERENCES users(id),
+                tag           TEXT    NOT NULL,
+                first_seen_at TEXT    NOT NULL DEFAULT (datetime('now')),
                 UNIQUE(user_id, tag)
             );
 
@@ -65,6 +66,7 @@ def init_db() -> None:
             "ALTER TABLE users ADD COLUMN email TEXT",
             "ALTER TABLE users ADD COLUMN reset_token TEXT",
             "ALTER TABLE users ADD COLUMN reset_token_expires TEXT",
+            "ALTER TABLE player_tags ADD COLUMN first_seen_at TEXT NOT NULL DEFAULT (datetime('now'))",
         ]:
             try:
                 conn.execute(stmt)
@@ -176,6 +178,10 @@ def remove_player_tag(user_id: int, tag: str) -> None:
 def save_snapshot(user_id: int, tag: str, data: str) -> None:
     with get_conn() as conn:
         conn.execute(
+            "DELETE FROM player_snapshots WHERE user_id = ? AND tag = ?",
+            (user_id, tag),
+        )
+        conn.execute(
             "INSERT INTO player_snapshots (user_id, tag, data) VALUES (?, ?, ?)",
             (user_id, tag, data),
         )
@@ -192,10 +198,10 @@ def get_latest_snapshot(user_id: int, tag: str) -> sqlite3.Row | None:
 def get_earliest_tracking_date(user_id: int, tag: str) -> str | None:
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT MIN(fetched_at) AS since FROM player_snapshots WHERE user_id = ? AND tag = ?",
+            "SELECT first_seen_at FROM player_tags WHERE user_id = ? AND tag = ?",
             (user_id, tag),
         ).fetchone()
-        return row["since"] if row else None
+        return row["first_seen_at"] if row else None
 
 
 # --- battle helpers ---
