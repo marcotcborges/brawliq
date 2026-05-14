@@ -21,8 +21,9 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS users (
                 id                   INTEGER PRIMARY KEY AUTOINCREMENT,
                 username             TEXT    NOT NULL UNIQUE,
-                password_hash        TEXT    NOT NULL,
+                password_hash        TEXT    NOT NULL DEFAULT '',
                 email                TEXT,
+                google_id            TEXT    UNIQUE,
                 reset_token          TEXT,
                 reset_token_expires  TEXT,
                 player_tag           TEXT,
@@ -64,6 +65,7 @@ def init_db() -> None:
             "ALTER TABLE player_snapshots ADD COLUMN tag TEXT",
             "ALTER TABLE battles ADD COLUMN type TEXT",
             "ALTER TABLE users ADD COLUMN email TEXT",
+            "ALTER TABLE users ADD COLUMN google_id TEXT",
             "ALTER TABLE users ADD COLUMN reset_token TEXT",
             "ALTER TABLE users ADD COLUMN reset_token_expires TEXT",
             "ALTER TABLE player_tags ADD COLUMN first_seen_at TEXT",
@@ -133,6 +135,43 @@ def update_last_login(user_id: int) -> None:
 def get_user_count() -> int:
     with get_conn() as conn:
         return conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+
+
+def _unique_username(conn: sqlite3.Connection, name: str, email: str) -> str:
+    base = name.split()[0].lower() if name else email.split("@")[0].lower()
+    base = "".join(c for c in base if c.isalnum())[:20] or "user"
+    username = base
+    i = 1
+    while conn.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone():
+        username = f"{base}{i}"
+        i += 1
+    return username
+
+
+MAX_USERS = 100
+
+
+def get_or_create_google_user(google_id: str, email: str, name: str) -> sqlite3.Row:
+    with get_conn() as conn:
+        user = conn.execute("SELECT * FROM users WHERE google_id = ?", (google_id,)).fetchone()
+        if user:
+            conn.execute("UPDATE users SET last_login_at = datetime('now') WHERE id = ?", (user["id"],))
+            return conn.execute("SELECT * FROM users WHERE id = ?", (user["id"],)).fetchone()
+        user = conn.execute(
+            "SELECT * FROM users WHERE LOWER(email) = LOWER(?)", (email,)
+        ).fetchone()
+        if user:
+            conn.execute("UPDATE users SET google_id = ?, last_login_at = datetime('now') WHERE id = ?", (google_id, user["id"]))
+            return conn.execute("SELECT * FROM users WHERE id = ?", (user["id"],)).fetchone()
+        if conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] >= MAX_USERS:
+            raise ValueError("BrawlIQ is currently at capacity. Try again later.")
+        username = _unique_username(conn, name, email)
+        conn.execute(
+            "INSERT INTO users (username, email, google_id) VALUES (?, ?, ?)",
+            (username, email or None, google_id),
+        )
+        conn.execute("UPDATE users SET last_login_at = datetime('now') WHERE google_id = ?", (google_id,))
+        return conn.execute("SELECT * FROM users WHERE google_id = ?", (google_id,)).fetchone()
 
 
 # --- password reset ---

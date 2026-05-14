@@ -7,9 +7,6 @@ import streamlit as st
 from db.database import (
     MAX_TAGS_PER_USER,
     init_db,
-    create_user,
-    get_user_by_username,
-    get_user_count,
     update_last_login,
     get_player_tags,
     add_player_tag,
@@ -24,15 +21,11 @@ from db.database import (
     get_community_brawler_stats,
     get_total_battles_tracked,
     get_active_users,
-    set_reset_token,
-    get_user_by_reset_token,
-    update_password,
+    get_or_create_google_user,
 )
-from services.auth import hash_password, verify_password, generate_reset_token
 from services.brawlstars import get_player, get_player_battlelog, parse_battlelog
-from services.email import send_reset_email
+from services.google_auth import get_auth_url, exchange_code
 
-MAX_USERS = 100
 APP_URL = os.getenv("APP_URL", "http://localhost:8501")
 
 init_db()
@@ -120,81 +113,9 @@ def _win_streaks(results: list) -> tuple[int, int]:
 
 def page_login():
     st.title("⚡ BrawlIQ")
-    tab_login, tab_register, tab_reset = st.tabs(["Log in", "Create account", "Forgot password"])
-
-    with tab_login:
-        with st.form("login_form"):
-            username = st.text_input("Username")
-            password = st.text_input("Password", type="password")
-            submitted = st.form_submit_button("Log in")
-        if submitted:
-            user = get_user_by_username(username)
-            if user and verify_password(password, user["password_hash"]):
-                st.session_state.user_id = user["id"]
-                st.session_state.username = user["username"]
-                update_last_login(user["id"])
-                st.rerun()
-            else:
-                st.error("Invalid username or password.")
-
-    with tab_register:
-        with st.form("register_form"):
-            new_username = st.text_input("Choose a username")
-            new_email = st.text_input("Email (used for password recovery)")
-            new_password = st.text_input("Choose a password", type="password")
-            confirm = st.text_input("Confirm password", type="password")
-            submitted = st.form_submit_button("Create account")
-        if submitted:
-            if not new_username or not new_password:
-                st.error("Username and password are required.")
-            elif new_password != confirm:
-                st.error("Passwords do not match.")
-            elif get_user_by_username(new_username):
-                st.error("Username already taken.")
-            elif get_user_count() >= MAX_USERS:
-                st.error("BrawlIQ is currently at capacity. Try again later.")
-            else:
-                create_user(new_username, hash_password(new_password), new_email)
-                st.success("Account created! You can now log in.")
-
-    with tab_reset:
-        with st.form("forgot_form"):
-            reset_username = st.text_input("Username")
-            reset_email = st.text_input("Email address on your account")
-            submitted = st.form_submit_button("Send reset link")
-        if submitted:
-            token = generate_reset_token()
-            matched = set_reset_token(reset_username, reset_email, token)
-            if matched:
-                reset_url = f"{APP_URL}?reset={token}"
-                sent = send_reset_email(reset_email, reset_username, reset_url)
-                if sent:
-                    st.success("Reset link sent — check your email.")
-                else:
-                    st.warning("Email service not configured. Contact the admin with your username.")
-            else:
-                st.error("No account found with that username and email.")
-
-
-def page_reset_password(token: str):
-    st.title("⚡ BrawlIQ — Reset password")
-    user = get_user_by_reset_token(token)
-    if not user:
-        st.error("This reset link is invalid or has expired.")
-        return
-    with st.form("reset_form"):
-        new_password = st.text_input("New password", type="password")
-        confirm = st.text_input("Confirm new password", type="password")
-        submitted = st.form_submit_button("Set new password")
-    if submitted:
-        if not new_password:
-            st.error("Password cannot be empty.")
-        elif new_password != confirm:
-            st.error("Passwords do not match.")
-        else:
-            update_password(user["id"], hash_password(new_password))
-            st.success("Password updated! You can now log in.")
-            st.query_params.clear()
+    st.markdown("### Track your Brawl Stars stats")
+    st.markdown("Sign in with your Google account to get started.")
+    st.link_button("Sign in with Google", get_auth_url(), use_container_width=True)
 
 
 # ── dashboard sections ────────────────────────────────────────────────────────
@@ -484,9 +405,20 @@ def page_dashboard():
 
 # ── router ────────────────────────────────────────────────────────────────────
 
-reset_token = st.query_params.get("reset")
-if reset_token:
-    page_reset_password(reset_token)
+oauth_code = st.query_params.get("code")
+if oauth_code and st.session_state.user_id is None:
+    st.query_params.clear()
+    with st.spinner("Signing you in…"):
+        try:
+            info = exchange_code(oauth_code)
+            user = get_or_create_google_user(info["sub"], info.get("email", ""), info.get("name", ""))
+            st.session_state.user_id = user["id"]
+            st.session_state.username = user["username"]
+            st.rerun()
+        except ValueError as exc:
+            st.error(str(exc))
+        except Exception as exc:
+            st.error(f"Sign-in failed: {exc}")
 elif st.session_state.user_id is None:
     page_login()
 else:
