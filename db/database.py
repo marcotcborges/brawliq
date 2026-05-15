@@ -485,6 +485,14 @@ def get_total_battles_tracked() -> int:
         ).fetchone()[0]
 
 
+def get_all_users_with_email() -> list[sqlite3.Row]:
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT id, username, email FROM users WHERE email IS NOT NULL AND email != '' AND username != ?",
+            (PUBLIC_USERNAME,),
+        ).fetchall()
+
+
 def get_active_users(inactive_days: int = 30) -> list[sqlite3.Row]:
     with get_conn() as conn:
         return conn.execute(

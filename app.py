@@ -2,6 +2,7 @@ import json
 import os
 import threading
 import time
+import urllib.parse
 from datetime import datetime
 import pandas as pd
 import streamlit as st
@@ -633,6 +634,25 @@ def page_dashboard():
         logout()
         st.rerun()
     st.sidebar.link_button("☕ Support BrawlIQ", "https://ko-fi.com/martulio", use_container_width=True)
+
+    selected_for_share = st.session_state.get("selected_tag")
+    if selected_for_share:
+        results_for_share = get_battle_results(user["id"], selected_for_share, n=500)
+        if results_for_share:
+            wins = sum(1 for r in results_for_share if r["result"] == "victory")
+            wr = round(100 * wins / len(results_for_share), 1)
+            tweet = (
+                f"My Brawl Stars win rate is {wr}% 📊 "
+                f"({len(results_for_share)} battles tracked with BrawlIQ — free stats tracker) "
+                f"brawliq.fly.dev #BrawlStars"
+            )
+        else:
+            tweet = "Just started tracking my Brawl Stars stats with BrawlIQ — free, no login needed 📊 brawliq.fly.dev #BrawlStars"
+    else:
+        tweet = "Just started tracking my Brawl Stars stats with BrawlIQ — free, no login needed 📊 brawliq.fly.dev #BrawlStars"
+
+    share_url = "https://twitter.com/intent/tweet?text=" + urllib.parse.quote(tweet)
+    st.sidebar.link_button("🐦 Share on Twitter", share_url, use_container_width=True)
     st.sidebar.caption("Log in at least once every 30 days to keep automatic data refresh active for your tags.")
 
     st.title("⚡ BrawlIQ")
