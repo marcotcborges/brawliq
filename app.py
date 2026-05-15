@@ -307,7 +307,7 @@ def page_home():
 
 # ── dashboard sections ────────────────────────────────────────────────────────
 
-def _render_profile(data: dict, fetched_at: str, since: str | None, brawlers_by_name: dict | None = None) -> None:
+def _render_profile(data: dict, fetched_at: str, since: str | None, brawlers_by_name: dict | None = None, overall_streaks: tuple[int, int] | None = None) -> None:
     brawlers_by_name = brawlers_by_name or {}
 
     col_date, _ = st.columns([2, 1])
@@ -345,21 +345,39 @@ def _render_profile(data: dict, fetched_at: str, since: str | None, brawlers_by_
         col1.metric("Current rank", _rank_label(ranked_cur))
         col2.metric("Best this season", _rank_label(ranked_season))
         col3.metric("Best all-time", _rank_label(ranked_alltime))
+        elo_cur = data.get("rankedElo", 0)
+        elo_season = data.get("highestSeasonRankedElo", 0)
+        elo_alltime = data.get("highestAllTimeRankedElo", 0)
+        if elo_cur or elo_season or elo_alltime:
+            col1.caption(f"{elo_cur:,} pts")
+            col2.caption(f"{elo_season:,} pts")
+            col3.caption(f"{elo_alltime:,} pts")
 
-    # ── win streaks from brawler data ─────────────────────────────────────────
-    if brawlers_by_name:
-        cur_streaks = [(name, b.get("currentWinStreak", 0)) for name, b in brawlers_by_name.items() if b.get("currentWinStreak", 0) > 0]
-        max_streaks = [(name, b.get("maxWinStreak", 0)) for name, b in brawlers_by_name.items() if b.get("maxWinStreak", 0) > 0]
-        if cur_streaks or max_streaks:
-            st.divider()
-            st.subheader("Win streaks")
+    # ── win streaks ───────────────────────────────────────────────────────────
+    show_streaks = overall_streaks or brawlers_by_name
+    if show_streaks:
+        st.divider()
+        st.subheader("Win streaks")
+
+        if overall_streaks:
+            overall_cur, overall_best = overall_streaks
+            st.caption("Overall — any brawler, tracked by BrawlIQ")
             col1, col2 = st.columns(2)
-            if cur_streaks:
-                best_cur = max(cur_streaks, key=lambda x: x[1])
-                col1.metric("Current streak", best_cur[1], f"with {best_cur[0].title()}")
-            if max_streaks:
-                best_max = max(max_streaks, key=lambda x: x[1])
-                col2.metric("Best streak ever", best_max[1], f"with {best_max[0].title()}")
+            col1.metric("Current streak", overall_cur)
+            col2.metric("Best streak tracked", overall_best)
+
+        if brawlers_by_name:
+            cur_streaks = [(name, b.get("currentWinStreak", 0)) for name, b in brawlers_by_name.items() if b.get("currentWinStreak", 0) > 0]
+            max_streaks = [(name, b.get("maxWinStreak", 0)) for name, b in brawlers_by_name.items() if b.get("maxWinStreak", 0) > 0]
+            if cur_streaks or max_streaks:
+                st.caption("Per brawler — from the official Brawl Stars API")
+                col1, col2 = st.columns(2)
+                if cur_streaks:
+                    best_cur = max(cur_streaks, key=lambda x: x[1])
+                    col1.metric("Current streak", best_cur[1], f"with {best_cur[0].title()}")
+                if max_streaks:
+                    best_max = max(max_streaks, key=lambda x: x[1])
+                    col2.metric("Best streak ever", best_max[1], f"with {best_max[0].title()}")
 
 
 def _render_my_stats(user_id: int, tag: str, since: str | None = None, until: str | None = None) -> None:
@@ -849,7 +867,9 @@ def page_dashboard():
 
         with sub_profile:
             if snapshot:
-                _render_profile(snap_data, snapshot["fetched_at"], tracking_since, brawlers_by_name)
+                streak_results = get_battle_results(user["id"], selected, n=500)
+                overall_streaks = _win_streaks(streak_results) if streak_results else None
+                _render_profile(snap_data, snapshot["fetched_at"], tracking_since, brawlers_by_name, overall_streaks)
             else:
                 st.info("Hit **Refresh** to load this player's stats.")
 
