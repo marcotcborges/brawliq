@@ -45,7 +45,13 @@ from db.database import (
     get_community_map_stats,
     get_community_mode_stats,
     cleanup_old_community_battles,
+    get_community_brawler_trends,
+    get_community_available_maps,
+    get_map_brawler_stats,
+    get_brawler_band_comparison,
+    get_community_brawler_deltas,
     TROPHY_BAND_LABELS,
+    TROPHY_BAND_ORDER,
 )
 from services.brawlstars import get_player, get_player_battlelog, parse_battlelog, parse_battlelog_all_players
 from services.google_auth import get_auth_url, exchange_code
@@ -595,18 +601,18 @@ def _render_community_meta() -> None:
 
     col1, col2, col3, col4 = st.columns(4)
 
-    mode_labels  = ["All modes"] + [_mode_display(m) for m in available_modes]
-    mode_sel     = col1.selectbox("Mode", mode_labels, key="cm_mode")
-    sel_mode     = None if mode_sel == "All modes" else available_modes[mode_labels.index(mode_sel) - 1]
+    mode_labels = ["All modes"] + [_mode_display(m) for m in available_modes]
+    mode_sel    = col1.selectbox("Mode", mode_labels, key="cm_mode")
+    sel_mode    = None if mode_sel == "All modes" else available_modes[mode_labels.index(mode_sel) - 1]
 
-    band_labels  = ["All trophies"] + [TROPHY_BAND_LABELS[b] for b in available_bands]
-    band_sel     = col2.selectbox("Trophy range", band_labels, key="cm_band")
-    sel_band     = None if band_sel == "All trophies" else available_bands[band_labels.index(band_sel) - 1]
+    band_labels = ["All trophies"] + [TROPHY_BAND_LABELS[b] for b in available_bands]
+    band_sel    = col2.selectbox("Trophy range", band_labels, key="cm_band")
+    sel_band    = None if band_sel == "All trophies" else available_bands[band_labels.index(band_sel) - 1]
 
-    ranked_only  = col3.toggle("Ranked only", key="meta_ranked_toggle")
+    ranked_only = col3.toggle("Ranked only", key="meta_ranked_toggle")
 
-    since_date   = col4.date_input("Since date", value=None, key="cm_since")
-    sel_since    = str(since_date).replace("-", "") + "T000000.000Z" if since_date else None
+    since_date  = col4.date_input("Since date", value=None, key="cm_since")
+    sel_since   = str(since_date).replace("-", "") + "T000000.000Z" if since_date else None
 
     total = get_community_total(sel_mode, sel_band, ranked_only, sel_since)
 
@@ -615,59 +621,207 @@ def _render_community_meta() -> None:
         return
 
     label_parts = []
-    if sel_mode:  label_parts.append(_mode_display(sel_mode))
-    if sel_band:  label_parts.append(TROPHY_BAND_LABELS[sel_band])
+    if sel_mode:    label_parts.append(_mode_display(sel_mode))
+    if sel_band:    label_parts.append(TROPHY_BAND_LABELS[sel_band])
     if ranked_only: label_parts.append("ranked")
     label = " · ".join(label_parts) if label_parts else "all modes & trophies"
     st.caption(f"**{total:,}** battle observations — {label}")
 
-    # ── sub-tabs ──────────────────────────────────────────────────────────────
-    tab_brawlers, tab_maps, tab_modes = st.tabs(["Brawler Meta", "Map Stats", "Mode Distribution"])
+    # preload brawler stats — shared by Tier List, Brawler Stats, Trophy Tiers
+    brawler_rows = get_community_brawler_stats(sel_mode, sel_band, ranked_only, sel_since)
+    bdf = pd.DataFrame([dict(r) for r in brawler_rows]) if brawler_rows else pd.DataFrame()
+    if not bdf.empty:
+        bdf.columns = ["Brawler", "Games", "Win Rate %", "Star Rate %", "Pick Rate %"]
 
-    # ── brawler meta ──────────────────────────────────────────────────────────
-    with tab_brawlers:
-        rows = get_community_brawler_stats(sel_mode, sel_band, ranked_only, sel_since)
-        if not rows:
+    # ── sub-tabs ──────────────────────────────────────────────────────────────
+    tab_tier, tab_table, tab_trends, tab_maps, tab_trophy, tab_modes = st.tabs([
+        "Tier List", "Brawler Stats", "Trends", "Map Guide", "Trophy Tiers", "Mode Distribution",
+    ])
+
+    # ── tier list ─────────────────────────────────────────────────────────────
+    with tab_tier:
+        if bdf.empty:
+            st.info("No data for the selected filters.")
+        else:
+            qualified = bdf[bdf["Games"] >= 20].copy()
+            if qualified.empty:
+                st.info("Not enough games yet to build a tier list (need 20+ per brawler).")
+            else:
+                max_pick = qualified["Pick Rate %"].max() or 1
+                qualified["_score"] = (
+                    qualified["Win Rate %"] * 0.65
+                    + (qualified["Pick Rate %"] / max_pick * 100) * 0.35
+                )
+                q = qualified["_score"].quantile([0.15, 0.40, 0.70, 0.90])
+                def _tier(s):
+                    if s >= q[0.90]: return "S"
+                    if s >= q[0.70]: return "A"
+                    if s >= q[0.40]: return "B"
+                    if s >= q[0.15]: return "C"
+                    return "D"
+                qualified["Tier"] = qualified["_score"].apply(_tier)
+
+                tier_style = {
+                    "S": ("#c92a2a", "#fff5f5"),
+                    "A": ("#d9480f", "#fff4e6"),
+                    "B": ("#2f9e44", "#ebfbee"),
+                    "C": ("#1971c2", "#e7f5ff"),
+                    "D": ("#495057", "#f8f9fa"),
+                }
+                html = "<div style='line-height:2'>"
+                for tier in ["S", "A", "B", "C", "D"]:
+                    names = qualified[qualified["Tier"] == tier]["Brawler"].tolist()
+                    if not names:
+                        continue
+                    border, bg = tier_style[tier]
+                    pills = "".join(
+                        f"<span style='background:{bg};border:1px solid {border};color:{border};"
+                        f"padding:3px 10px;border-radius:20px;margin:2px;display:inline-block;"
+                        f"font-size:13px;font-weight:500'>{n}</span>"
+                        for n in names
+                    )
+                    html += (
+                        f"<div style='display:flex;align-items:center;margin:3px 0'>"
+                        f"<div style='background:{border};color:white;width:34px;height:34px;"
+                        f"display:flex;align-items:center;justify-content:center;font-weight:bold;"
+                        f"font-size:18px;border-radius:6px;flex-shrink:0;margin-right:10px'>{tier}</div>"
+                        f"<div style='flex:1;flex-wrap:wrap'>{pills}</div></div>"
+                    )
+                html += "</div>"
+                st.markdown(html, unsafe_allow_html=True)
+                st.caption("Score = win rate (65%) + relative pick rate (35%) · min 20 games")
+
+            # ── rising / falling ──────────────────────────────────────────────
+            st.divider()
+            st.subheader("Rising & Falling (last 7 days vs prior 7 days)")
+            delta_rows = get_community_brawler_deltas(sel_mode, sel_band, ranked_only)
+            if not delta_rows:
+                st.info("Not enough recent data for trend comparison yet.")
+            else:
+                ddf = pd.DataFrame([dict(r) for r in delta_rows])
+                ddf.columns = ["Brawler", "Games (recent)", "WR% (recent)", "Games (prior)", "WR% (prior)"]
+                ddf["Δ Win Rate"] = (ddf["WR% (recent)"] - ddf["WR% (prior)"]).round(1)
+                ddf["Trend"] = ddf["Δ Win Rate"].apply(
+                    lambda x: f"▲ +{x:.1f}%" if x > 0.5 else (f"▼ {x:.1f}%" if x < -0.5 else "→ stable")
+                )
+                rising  = ddf[ddf["Δ Win Rate"] >  1].head(5)
+                falling = ddf[ddf["Δ Win Rate"] < -1].tail(5)
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.markdown("**Rising 🔥**")
+                    if rising.empty:
+                        st.caption("No significant risers")
+                    else:
+                        for _, r in rising.iterrows():
+                            st.success(f"**{r['Brawler']}** {r['Trend']}  ({r['WR% (prior)']}% → {r['WR% (recent)']}%)")
+                with col2:
+                    st.markdown("**Falling 📉**")
+                    if falling.empty:
+                        st.caption("No significant fallers")
+                    else:
+                        for _, r in falling[::-1].iterrows():
+                            st.error(f"**{r['Brawler']}** {r['Trend']}  ({r['WR% (prior)']}% → {r['WR% (recent)']}%)")
+                with st.expander("Full delta table"):
+                    st.dataframe(
+                        ddf[["Brawler","WR% (prior)","WR% (recent)","Δ Win Rate","Trend","Games (recent)"]],
+                        use_container_width=True, hide_index=True,
+                    )
+
+    # ── brawler stats ─────────────────────────────────────────────────────────
+    with tab_table:
+        if bdf.empty:
             st.info("No brawler data for the selected filters.")
         else:
-            df = pd.DataFrame([dict(r) for r in rows])
-            df.columns = ["Brawler", "Games", "Win Rate %", "Star Rate %", "Pick Rate %"]
-
-            qualified = df[df["Games"] >= 20]
+            qualified = bdf[bdf["Games"] >= 20]
             if not qualified.empty:
                 top_win  = qualified.loc[qualified["Win Rate %"].idxmax()]
-                top_pick = df.loc[df["Pick Rate %"].idxmax()]
+                top_pick = bdf.loc[bdf["Pick Rate %"].idxmax()]
                 top_star = qualified.loc[qualified["Star Rate %"].idxmax()]
                 col1, col2, col3 = st.columns(3)
-                col1.metric("Highest win rate",   top_win["Brawler"],  f"{top_win['Win Rate %']}%")
-                col2.metric("Most picked",         top_pick["Brawler"], f"{top_pick['Pick Rate %']}%")
-                col3.metric("Most star players",   top_star["Brawler"], f"{top_star['Star Rate %']}%")
+                col1.metric("Highest win rate",  top_win["Brawler"],  f"{top_win['Win Rate %']}%")
+                col2.metric("Most picked",        top_pick["Brawler"], f"{top_pick['Pick Rate %']}%")
+                col3.metric("Most star players",  top_star["Brawler"], f"{top_star['Star Rate %']}%")
                 st.divider()
+            st.dataframe(bdf, use_container_width=True, hide_index=True)
 
-            st.dataframe(df, use_container_width=True, hide_index=True)
+    # ── meta trends ───────────────────────────────────────────────────────────
+    with tab_trends:
+        top_n = st.select_slider("Brawlers to show", options=[5, 8, 10, 15], value=8, key="cm_topn")
+        trend_rows = get_community_brawler_trends(sel_mode, sel_band, ranked_only, top_n=top_n)
+        if not trend_rows:
+            st.info("Not enough weekly data yet — check back after a few days.")
+        else:
+            tdf = pd.DataFrame([dict(r) for r in trend_rows])
+            tdf.columns = ["Brawler", "Week", "Games", "Win Rate %"]
+            weeks = sorted(tdf["Week"].unique())
+            if len(weeks) < 2:
+                st.info("Need data from at least 2 different weeks for the trend chart.")
+            else:
+                pivot = tdf.pivot_table(index="Week", columns="Brawler", values="Win Rate %")
+                pivot = pivot.reindex(weeks)
+                st.line_chart(pivot)
+                st.caption(f"Weekly win rate — top {top_n} brawlers by total games · weeks with <5 games excluded")
+                with st.expander("Raw data"):
+                    st.dataframe(tdf, use_container_width=True, hide_index=True)
 
-    # ── map stats ─────────────────────────────────────────────────────────────
+    # ── map guide ─────────────────────────────────────────────────────────────
     with tab_maps:
-        map_rows = get_community_map_stats(sel_mode, sel_band, ranked_only, sel_since)
-        if not map_rows:
+        available_maps = get_community_available_maps(sel_mode, sel_band, ranked_only, sel_since)
+        if not available_maps:
             st.info("No map data for the selected filters.")
         else:
-            mdf = pd.DataFrame([dict(r) for r in map_rows])
-            mdf.columns = ["Map", "Mode", "Games", "Win Rate %", "Star Rate %"]
-            mdf["Mode"] = mdf["Mode"].apply(_mode_display)
+            col_map, col_overview = st.columns([2, 1])
+            sel_map = col_map.selectbox("Pick a map", available_maps, key="cm_map")
+            map_brawler_rows = get_map_brawler_stats(sel_map, sel_mode, sel_band, ranked_only, sel_since)
+            if map_brawler_rows:
+                mbdf = pd.DataFrame([dict(r) for r in map_brawler_rows])
+                mbdf.columns = ["Brawler", "Games", "Win Rate %", "Star Rate %", "Pick Rate %"]
+                top3 = mbdf.head(3)
+                medals = ["🥇", "🥈", "🥉"]
+                col_overview.markdown("**Top picks**")
+                for i, (_, r) in enumerate(top3.iterrows()):
+                    col_overview.markdown(f"{medals[i]} **{r['Brawler']}** — {r['Win Rate %']}% WR")
+                st.bar_chart(mbdf.set_index("Brawler")["Win Rate %"].head(15))
+                st.dataframe(mbdf, use_container_width=True, hide_index=True)
+            else:
+                st.info(f"Not enough data for {sel_map} yet (need 5+ games per brawler).")
 
-            qualified_m = mdf[mdf["Games"] >= 10]
-            if not qualified_m.empty:
-                most_played = mdf.loc[mdf["Games"].idxmax()]
-                best_map    = qualified_m.loc[qualified_m["Win Rate %"].idxmax()]
-                worst_map   = qualified_m.loc[qualified_m["Win Rate %"].idxmin()]
-                col1, col2, col3 = st.columns(3)
-                col1.metric("Most played map",    most_played["Map"], f"{int(most_played['Games'])} games")
-                col2.metric("Highest win rate",   best_map["Map"],    f"{best_map['Win Rate %']}%")
-                col3.metric("Lowest win rate",    worst_map["Map"],   f"{worst_map['Win Rate %']}%")
-                st.divider()
+            st.divider()
+            st.subheader("All maps")
+            map_rows = get_community_map_stats(sel_mode, sel_band, ranked_only, sel_since)
+            if map_rows:
+                mdf = pd.DataFrame([dict(r) for r in map_rows])
+                mdf.columns = ["Map", "Mode", "Games", "Win Rate %", "Star Rate %"]
+                mdf["Mode"] = mdf["Mode"].apply(_mode_display)
+                st.dataframe(mdf, use_container_width=True, hide_index=True)
 
-            st.dataframe(mdf, use_container_width=True, hide_index=True)
+    # ── trophy tiers ──────────────────────────────────────────────────────────
+    with tab_trophy:
+        if bdf.empty:
+            st.info("No data for the selected filters.")
+        else:
+            brawler_names = sorted(bdf["Brawler"].unique())
+            sel_brawler = st.selectbox("Select brawler", brawler_names, key="cm_brawler")
+            band_rows = get_brawler_band_comparison(sel_brawler, sel_mode, ranked_only, sel_since)
+            if not band_rows:
+                st.info(f"Not enough data for {sel_brawler} across trophy bands (need 10+ games per band).")
+            else:
+                bddf = pd.DataFrame([dict(r) for r in band_rows])
+                bddf.columns = ["Band", "Games", "Win Rate %", "Star Rate %"]
+                bddf["Band"] = bddf["Band"].map(TROPHY_BAND_LABELS).fillna(bddf["Band"])
+                # reorder by trophy band order
+                band_order = [TROPHY_BAND_LABELS[b] for b in TROPHY_BAND_ORDER if TROPHY_BAND_LABELS[b] in bddf["Band"].values]
+                bddf = bddf.set_index("Band").reindex(band_order).dropna(subset=["Games"]).reset_index()
+
+                st.bar_chart(bddf.set_index("Band")["Win Rate %"])
+                st.caption(f"Win rate for **{sel_brawler}** across trophy tiers · min 10 games per band")
+
+                highest = bddf.loc[bddf["Win Rate %"].idxmax()]
+                lowest  = bddf.loc[bddf["Win Rate %"].idxmin()]
+                col1, col2 = st.columns(2)
+                col1.success(f"**Best tier:** {highest['Band']} — {highest['Win Rate %']}%")
+                col2.error(f"**Worst tier:** {lowest['Band']} — {lowest['Win Rate %']}%")
+                st.dataframe(bddf, use_container_width=True, hide_index=True)
 
     # ── mode distribution ─────────────────────────────────────────────────────
     with tab_modes:
@@ -678,7 +832,6 @@ def _render_community_meta() -> None:
             modf = pd.DataFrame([dict(r) for r in mode_rows])
             modf.columns = ["Mode", "Games", "Win Rate %", "Play Rate %"]
             modf["Mode"] = modf["Mode"].apply(_mode_display)
-
             most_pop = modf.loc[modf["Games"].idxmax()]
             st.metric("Most played mode", most_pop["Mode"], f"{most_pop['Play Rate %']}% of all games")
             st.divider()

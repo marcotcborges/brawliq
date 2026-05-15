@@ -612,6 +612,131 @@ def get_community_mode_stats(trophy_band=None, since=None) -> list[sqlite3.Row]:
         ).fetchall()
 
 
+def get_community_brawler_trends(mode=None, trophy_band=None, ranked_only=False, top_n: int = 8) -> list[sqlite3.Row]:
+    """Weekly win-rate for the top-N most-played brawlers."""
+    where, params = _community_where(mode, trophy_band, ranked_only)
+    with get_conn() as conn:
+        return conn.execute(
+            f"""
+            WITH top_brawlers AS (
+                SELECT brawler_name FROM community_battles
+                WHERE {where}
+                GROUP BY brawler_name ORDER BY COUNT(*) DESC LIMIT ?
+            )
+            SELECT
+                cb.brawler_name,
+                strftime('%Y-W%W',
+                    substr(battle_time,1,4)||'-'||substr(battle_time,5,2)||'-'||substr(battle_time,7,2)
+                ) AS week,
+                COUNT(*) AS games,
+                ROUND(100.0 * SUM(CASE WHEN result='victory' THEN 1 ELSE 0 END) / COUNT(*), 1) AS win_rate
+            FROM community_battles cb
+            JOIN top_brawlers tb ON cb.brawler_name = tb.brawler_name
+            WHERE {where}
+            GROUP BY cb.brawler_name, week
+            HAVING games >= 5
+            ORDER BY week ASC
+            """,
+            params + [top_n] + params,
+        ).fetchall()
+
+
+def get_community_available_maps(mode=None, trophy_band=None, ranked_only=False, since=None) -> list[str]:
+    where, params = _community_where(mode, trophy_band, ranked_only, since)
+    with get_conn() as conn:
+        return [r[0] for r in conn.execute(
+            f"SELECT DISTINCT map FROM community_battles WHERE {where} AND map != '' ORDER BY map",
+            params,
+        ).fetchall()]
+
+
+def get_map_brawler_stats(map_name: str, mode=None, trophy_band=None, ranked_only=False, since=None, min_games: int = 5) -> list[sqlite3.Row]:
+    """Best brawlers for a specific map, ordered by win rate."""
+    where, params = _community_where(mode, trophy_band, ranked_only, since)
+    with get_conn() as conn:
+        total = conn.execute(
+            f"SELECT COUNT(*) FROM community_battles WHERE {where} AND map = ?",
+            params + [map_name],
+        ).fetchone()[0]
+        if total == 0:
+            return []
+        return conn.execute(
+            f"""
+            SELECT brawler_name,
+                COUNT(*) AS games,
+                ROUND(100.0 * SUM(CASE WHEN result='victory' THEN 1 ELSE 0 END) / COUNT(*), 1) AS win_rate,
+                ROUND(100.0 * SUM(is_star_player) / COUNT(*), 1) AS star_rate,
+                ROUND(100.0 * COUNT(*) / {total}, 2) AS pick_rate
+            FROM community_battles
+            WHERE {where} AND map = ?
+            GROUP BY brawler_name
+            HAVING games >= ?
+            ORDER BY win_rate DESC
+            """,
+            params + [map_name, min_games],
+        ).fetchall()
+
+
+def get_brawler_band_comparison(brawler_name: str, mode=None, ranked_only=False, since=None) -> list[sqlite3.Row]:
+    """Win rate for a single brawler broken down by trophy band."""
+    filters = ["result IS NOT NULL", "brawler_name = ?", "trophy_band IS NOT NULL"]
+    params: list = [brawler_name]
+    if mode:
+        filters.append("mode = ?"); params.append(mode)
+    if ranked_only:
+        filters.append("type IN ('ranked','soloRanked','teamRanked')")
+    if since:
+        filters.append("battle_time >= ?"); params.append(since)
+    where = " AND ".join(filters)
+    with get_conn() as conn:
+        return conn.execute(
+            f"""
+            SELECT trophy_band,
+                COUNT(*) AS games,
+                ROUND(100.0 * SUM(CASE WHEN result='victory' THEN 1 ELSE 0 END) / COUNT(*), 1) AS win_rate,
+                ROUND(100.0 * SUM(is_star_player) / COUNT(*), 1) AS star_rate
+            FROM community_battles
+            WHERE {where}
+            GROUP BY trophy_band
+            HAVING games >= 10
+            ORDER BY CASE trophy_band
+                WHEN 'under5k' THEN 1 WHEN '5k-15k' THEN 2 WHEN '15k-30k' THEN 3
+                WHEN '30k-50k' THEN 4 WHEN '50k+' THEN 5 END
+            """,
+            params,
+        ).fetchall()
+
+
+def get_community_brawler_deltas(mode=None, trophy_band=None, ranked_only=False, min_games: int = 15) -> list[sqlite3.Row]:
+    """Compare win rate for last 7 days vs the prior 7 days."""
+    where, params = _community_where(mode, trophy_band, ranked_only)
+    recent = (datetime.utcnow() - timedelta(days=7)).strftime("%Y%m%dT%H%M%S")
+    prior  = (datetime.utcnow() - timedelta(days=14)).strftime("%Y%m%dT%H%M%S")
+    with get_conn() as conn:
+        return conn.execute(
+            f"""
+            WITH labelled AS (
+                SELECT brawler_name, result,
+                       CASE WHEN battle_time >= ? THEN 'recent' ELSE 'prior' END AS period
+                FROM community_battles
+                WHERE {where} AND battle_time >= ?
+            )
+            SELECT brawler_name,
+                SUM(CASE WHEN period='recent' THEN 1 ELSE 0 END) AS games_recent,
+                ROUND(100.0 * SUM(CASE WHEN period='recent' AND result='victory' THEN 1 ELSE 0 END) /
+                      NULLIF(SUM(CASE WHEN period='recent' THEN 1 ELSE 0 END), 0), 1) AS wr_recent,
+                SUM(CASE WHEN period='prior'  THEN 1 ELSE 0 END) AS games_prior,
+                ROUND(100.0 * SUM(CASE WHEN period='prior'  AND result='victory' THEN 1 ELSE 0 END) /
+                      NULLIF(SUM(CASE WHEN period='prior'  THEN 1 ELSE 0 END), 0), 1) AS wr_prior
+            FROM labelled
+            GROUP BY brawler_name
+            HAVING games_recent >= ? AND games_prior >= ?
+            ORDER BY (wr_recent - COALESCE(wr_prior, wr_recent)) DESC
+            """,
+            [recent] + params + [prior, min_games, min_games],
+        ).fetchall()
+
+
 def get_total_battles_tracked() -> int:
     with get_conn() as conn:
         return conn.execute(
