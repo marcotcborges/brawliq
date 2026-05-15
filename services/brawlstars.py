@@ -42,6 +42,81 @@ def get_player_battlelog(player_tag: str) -> dict:
     return response.json()
 
 
+def parse_battlelog_all_players(battlelog: dict, tracked_tag: str) -> list[dict]:
+    """Extract battle observations for every player seen in each battle (not just the tracked player)."""
+    tag = _normalize_tag(tracked_tag)
+    observations = []
+
+    for item in battlelog.get("items", []):
+        battle = item.get("battle", {})
+        event  = item.get("event", {})
+        mode   = battle.get("mode", "")
+        b_time = item.get("battleTime", "")
+        if not b_time:
+            continue
+
+        b_type = battle.get("type")
+        b_map  = event.get("map", "")
+
+        if "showdown" in mode.lower():
+            threshold = 4 if "solo" in mode.lower() else 2
+            for player in battle.get("players", []):
+                b = player.get("brawler", {})
+                brawler_name = b.get("name")
+                player_tag   = player.get("tag", "")
+                rank         = player.get("rank")
+                if brawler_name and rank is not None and player_tag:
+                    observations.append({
+                        "player_tag":    player_tag,
+                        "battle_time":   b_time,
+                        "mode":          mode,
+                        "type":          b_type,
+                        "map":           b_map,
+                        "result":        "victory" if rank <= threshold else "defeat",
+                        "brawler_name":  brawler_name,
+                        "is_star_player": False,
+                    })
+        else:
+            teams    = battle.get("teams", [])
+            star_tag = (battle.get("starPlayer") or {}).get("tag", "").upper()
+            tracked_result = battle.get("result")
+
+            tracked_team_idx = None
+            for i, team in enumerate(teams):
+                for player in team:
+                    if player.get("tag", "").upper() == tag:
+                        tracked_team_idx = i
+                        break
+                if tracked_team_idx is not None:
+                    break
+
+            flip = {"victory": "defeat", "defeat": "victory"}
+
+            for team_idx, team in enumerate(teams):
+                if tracked_team_idx is not None:
+                    team_result = tracked_result if team_idx == tracked_team_idx else flip.get(tracked_result, tracked_result)
+                else:
+                    team_result = None
+
+                for player in team:
+                    b            = player.get("brawler", {})
+                    brawler_name = b.get("name")
+                    player_tag   = player.get("tag", "")
+                    if brawler_name and player_tag:
+                        observations.append({
+                            "player_tag":    player_tag,
+                            "battle_time":   b_time,
+                            "mode":          mode,
+                            "type":          b_type,
+                            "map":           b_map,
+                            "result":        team_result,
+                            "brawler_name":  brawler_name,
+                            "is_star_player": star_tag == player_tag.upper(),
+                        })
+
+    return observations
+
+
 def parse_battlelog(battlelog: dict, player_tag: str) -> list[dict]:
     """Extract per-battle stats for a specific player from their battlelog."""
     tag = _normalize_tag(player_tag)

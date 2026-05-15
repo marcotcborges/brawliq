@@ -37,8 +37,16 @@ from db.database import (
     touch_player_tag,
     cleanup_stale_tags,
     get_active_public_tags,
+    get_trophy_band,
+    save_community_battles,
+    get_community_total,
+    get_community_available_modes,
+    get_community_available_trophy_bands,
+    get_community_map_stats,
+    get_community_mode_stats,
+    TROPHY_BAND_LABELS,
 )
-from services.brawlstars import get_player, get_player_battlelog, parse_battlelog
+from services.brawlstars import get_player, get_player_battlelog, parse_battlelog, parse_battlelog_all_players
 from services.google_auth import get_auth_url, exchange_code
 from services.email import notify_admin
 
@@ -69,6 +77,8 @@ def _background_scheduler():
                     save_snapshot(user["id"], tag, json.dumps(data))
                     bl = get_player_battlelog(tag)
                     save_battles(user["id"], tag, parse_battlelog(bl, tag))
+                    band = get_trophy_band(data.get("trophies", 0))
+                    save_community_battles(parse_battlelog_all_players(bl, tag), band)
                 except Exception:
                     pass
         except Exception:
@@ -82,6 +92,8 @@ def _background_scheduler():
                     save_snapshot(pub_id, tag, json.dumps(data))
                     bl = get_player_battlelog(tag)
                     save_battles(pub_id, tag, parse_battlelog(bl, tag))
+                    band = get_trophy_band(data.get("trophies", 0))
+                    save_community_battles(parse_battlelog_all_players(bl, tag), band)
                 except Exception:
                     pass
         except Exception:
@@ -124,6 +136,8 @@ def _fetch_and_store(user_id: int, tag: str) -> dict:
     save_snapshot(user_id, tag, json.dumps(data))
     bl = get_player_battlelog(tag)
     save_battles(user_id, tag, parse_battlelog(bl, tag))
+    band = get_trophy_band(data.get("trophies", 0))
+    save_community_battles(parse_battlelog_all_players(bl, tag), band)
     return data
 
 
@@ -286,9 +300,9 @@ def page_home():
         "Find it in-game by tapping your profile picture."
     )
 
-    total = get_total_battles_tracked()
+    total = get_community_total()
     if total > 0:
-        st.caption(f"⚡ **{total:,} battles** tracked so far across all BrawlIQ players")
+        st.caption(f"⚡ **{total:,} battle observations** across all BrawlIQ players")
 
     # ── sign-in section ───────────────────────────────────────────────────────
     st.divider()
@@ -558,36 +572,107 @@ def _render_ranked(user_id: int, tag: str, since: str | None = None, until: str 
         st.dataframe(df, use_container_width=True, hide_index=True)
 
 
+def _mode_display(mode: str) -> str:
+    import re
+    return re.sub(r"([A-Z])", r" \1", mode).strip().title()
+
+
 def _render_community_meta() -> None:
-    ranked_only = st.toggle("Ranked only", key="meta_ranked_toggle")
-    total = get_total_battles_tracked()
-    if total < 50:
-        st.info(f"Community meta needs more data — {total} battles tracked so far. Share BrawlIQ to grow it!")
+    # ── filters ───────────────────────────────────────────────────────────────
+    available_modes = get_community_available_modes()
+    available_bands = get_community_available_trophy_bands()
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    mode_labels  = ["All modes"] + [_mode_display(m) for m in available_modes]
+    mode_sel     = col1.selectbox("Mode", mode_labels, key="cm_mode")
+    sel_mode     = None if mode_sel == "All modes" else available_modes[mode_labels.index(mode_sel) - 1]
+
+    band_labels  = ["All trophies"] + [TROPHY_BAND_LABELS[b] for b in available_bands]
+    band_sel     = col2.selectbox("Trophy range", band_labels, key="cm_band")
+    sel_band     = None if band_sel == "All trophies" else available_bands[band_labels.index(band_sel) - 1]
+
+    ranked_only  = col3.toggle("Ranked only", key="meta_ranked_toggle")
+
+    since_date   = col4.date_input("Since date", value=None, key="cm_since")
+    sel_since    = str(since_date).replace("-", "") + "T000000.000Z" if since_date else None
+
+    total = get_community_total(sel_mode, sel_band, ranked_only, sel_since)
+
+    if total < 500:
+        st.info(f"Community meta is building up — **{total:,}** observations so far. Share BrawlIQ to grow it faster!")
         return
 
-    rows = get_community_brawler_stats(ranked_only=ranked_only)
-    if not rows:
-        st.info("No community data yet.")
-        return
+    label_parts = []
+    if sel_mode:  label_parts.append(_mode_display(sel_mode))
+    if sel_band:  label_parts.append(TROPHY_BAND_LABELS[sel_band])
+    if ranked_only: label_parts.append("ranked")
+    label = " · ".join(label_parts) if label_parts else "all modes & trophies"
+    st.caption(f"**{total:,}** battle observations — {label}")
 
-    df = pd.DataFrame([dict(r) for r in rows])
-    df.columns = ["Brawler", "Games", "Win Rate %", "Star Rate %", "Pick Rate %"]
-    meta_total = sum(r["games"] for r in rows)
-    label = "ranked battles" if ranked_only else "battles"
-    st.caption(f"Based on **{meta_total:,}** {label} tracked across all BrawlIQ users")
+    # ── sub-tabs ──────────────────────────────────────────────────────────────
+    tab_brawlers, tab_maps, tab_modes = st.tabs(["Brawler Meta", "Map Stats", "Mode Distribution"])
 
-    qualified = df[df["Games"] >= 10]
-    if not qualified.empty:
-        top_win = qualified.loc[qualified["Win Rate %"].idxmax()]
-        top_pick = df.loc[df["Pick Rate %"].idxmax()]
-        top_star = qualified.loc[qualified["Star Rate %"].idxmax()]
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Highest win rate", top_win["Brawler"], f"{top_win['Win Rate %']}%")
-        col2.metric("Most picked", top_pick["Brawler"], f"{top_pick['Pick Rate %']}%")
-        col3.metric("Most star players", top_star["Brawler"], f"{top_star['Star Rate %']}%")
+    # ── brawler meta ──────────────────────────────────────────────────────────
+    with tab_brawlers:
+        rows = get_community_brawler_stats(sel_mode, sel_band, ranked_only, sel_since)
+        if not rows:
+            st.info("No brawler data for the selected filters.")
+        else:
+            df = pd.DataFrame([dict(r) for r in rows])
+            df.columns = ["Brawler", "Games", "Win Rate %", "Star Rate %", "Pick Rate %"]
 
-    st.divider()
-    st.dataframe(df, use_container_width=True, hide_index=True)
+            qualified = df[df["Games"] >= 20]
+            if not qualified.empty:
+                top_win  = qualified.loc[qualified["Win Rate %"].idxmax()]
+                top_pick = df.loc[df["Pick Rate %"].idxmax()]
+                top_star = qualified.loc[qualified["Star Rate %"].idxmax()]
+                col1, col2, col3 = st.columns(3)
+                col1.metric("Highest win rate",   top_win["Brawler"],  f"{top_win['Win Rate %']}%")
+                col2.metric("Most picked",         top_pick["Brawler"], f"{top_pick['Pick Rate %']}%")
+                col3.metric("Most star players",   top_star["Brawler"], f"{top_star['Star Rate %']}%")
+                st.divider()
+
+            st.dataframe(df, use_container_width=True, hide_index=True)
+
+    # ── map stats ─────────────────────────────────────────────────────────────
+    with tab_maps:
+        map_rows = get_community_map_stats(sel_mode, sel_band, ranked_only, sel_since)
+        if not map_rows:
+            st.info("No map data for the selected filters.")
+        else:
+            mdf = pd.DataFrame([dict(r) for r in map_rows])
+            mdf.columns = ["Map", "Mode", "Games", "Win Rate %", "Star Rate %"]
+            mdf["Mode"] = mdf["Mode"].apply(_mode_display)
+
+            qualified_m = mdf[mdf["Games"] >= 10]
+            if not qualified_m.empty:
+                most_played = mdf.loc[mdf["Games"].idxmax()]
+                best_map    = qualified_m.loc[qualified_m["Win Rate %"].idxmax()]
+                worst_map   = qualified_m.loc[qualified_m["Win Rate %"].idxmin()]
+                col1, col2, col3 = st.columns(3)
+                col1.metric("Most played map",    most_played["Map"], f"{int(most_played['Games'])} games")
+                col2.metric("Highest win rate",   best_map["Map"],    f"{best_map['Win Rate %']}%")
+                col3.metric("Lowest win rate",    worst_map["Map"],   f"{worst_map['Win Rate %']}%")
+                st.divider()
+
+            st.dataframe(mdf, use_container_width=True, hide_index=True)
+
+    # ── mode distribution ─────────────────────────────────────────────────────
+    with tab_modes:
+        mode_rows = get_community_mode_stats(sel_band, sel_since)
+        if not mode_rows:
+            st.info("No mode data for the selected filters.")
+        else:
+            modf = pd.DataFrame([dict(r) for r in mode_rows])
+            modf.columns = ["Mode", "Games", "Win Rate %", "Play Rate %"]
+            modf["Mode"] = modf["Mode"].apply(_mode_display)
+
+            most_pop = modf.loc[modf["Games"].idxmax()]
+            st.metric("Most played mode", most_pop["Mode"], f"{most_pop['Play Rate %']}% of all games")
+            st.divider()
+            st.bar_chart(modf.set_index("Mode")["Play Rate %"])
+            st.dataframe(modf, use_container_width=True, hide_index=True)
 
 
 # ── insights ─────────────────────────────────────────────────────────────────

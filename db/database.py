@@ -50,6 +50,20 @@ def init_db() -> None:
                 data       TEXT    NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS community_battles (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                battle_time   TEXT    NOT NULL,
+                player_tag    TEXT    NOT NULL,
+                mode          TEXT,
+                type          TEXT,
+                map           TEXT,
+                brawler_name  TEXT,
+                result        TEXT,
+                is_star_player INTEGER NOT NULL DEFAULT 0,
+                trophy_band   TEXT,
+                UNIQUE(battle_time, player_tag)
+            );
+
             CREATE TABLE IF NOT EXISTS battles (
                 id             INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id        INTEGER NOT NULL REFERENCES users(id),
@@ -457,26 +471,134 @@ def get_battle_results(user_id: int, tag: str, n: int = 500, since: str | None =
         ).fetchall()
 
 
-def get_community_brawler_stats(ranked_only: bool = False) -> list[sqlite3.Row]:
-    type_filter = "AND type IN ('ranked','soloRanked','teamRanked')" if ranked_only else ""
+TROPHY_BAND_ORDER = ["under5k", "5k-15k", "15k-30k", "30k-50k", "50k+"]
+TROPHY_BAND_LABELS = {
+    "under5k": "🥉 Under 5k",
+    "5k-15k":  "🥈 5k – 15k",
+    "15k-30k": "🥇 15k – 30k",
+    "30k-50k": "💎 30k – 50k",
+    "50k+":    "👑 50k+",
+}
+
+
+def get_trophy_band(trophies: int) -> str:
+    if trophies < 5000:  return "under5k"
+    if trophies < 15000: return "5k-15k"
+    if trophies < 30000: return "15k-30k"
+    if trophies < 50000: return "30k-50k"
+    return "50k+"
+
+
+def save_community_battles(observations: list[dict], band: str) -> None:
+    with get_conn() as conn:
+        conn.executemany(
+            """INSERT OR IGNORE INTO community_battles
+               (battle_time, player_tag, mode, type, map, brawler_name, result, is_star_player, trophy_band)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            [
+                (o["battle_time"], o["player_tag"], o["mode"], o.get("type"),
+                 o.get("map", ""), o["brawler_name"], o.get("result"),
+                 int(o.get("is_star_player", False)), band)
+                for o in observations
+                if o.get("player_tag") and o.get("brawler_name")
+            ],
+        )
+
+
+def _community_where(mode=None, trophy_band=None, ranked_only=False, since=None):
+    filters = ["result IS NOT NULL"]
+    params  = []
+    if mode:
+        filters.append("mode = ?"); params.append(mode)
+    if trophy_band:
+        filters.append("trophy_band = ?"); params.append(trophy_band)
+    if ranked_only:
+        filters.append("type IN ('ranked','soloRanked','teamRanked')")
+    if since:
+        filters.append("battle_time >= ?"); params.append(since)
+    return " AND ".join(filters), params
+
+
+def get_community_total(mode=None, trophy_band=None, ranked_only=False, since=None) -> int:
+    where, params = _community_where(mode, trophy_band, ranked_only, since)
+    with get_conn() as conn:
+        return conn.execute(f"SELECT COUNT(*) FROM community_battles WHERE {where}", params).fetchone()[0]
+
+
+def get_community_available_modes() -> list[str]:
+    with get_conn() as conn:
+        return [r["mode"] for r in conn.execute(
+            "SELECT DISTINCT mode FROM community_battles WHERE mode IS NOT NULL ORDER BY mode"
+        ).fetchall()]
+
+
+def get_community_available_trophy_bands() -> list[str]:
+    with get_conn() as conn:
+        existing = {r["trophy_band"] for r in conn.execute(
+            "SELECT DISTINCT trophy_band FROM community_battles WHERE trophy_band IS NOT NULL"
+        ).fetchall()}
+    return [b for b in TROPHY_BAND_ORDER if b in existing]
+
+
+def get_community_brawler_stats(mode=None, trophy_band=None, ranked_only=False, since=None) -> list[sqlite3.Row]:
+    where, params = _community_where(mode, trophy_band, ranked_only, since)
+    total = get_community_total(mode, trophy_band, ranked_only, since)
+    if total == 0:
+        return []
     with get_conn() as conn:
         return conn.execute(
             f"""
-            WITH deduped AS (
-                SELECT DISTINCT tag, battle_time, brawler_name, result, is_star_player, type
-                FROM battles
-                WHERE result IS NOT NULL {type_filter}
-            )
             SELECT
                 brawler_name,
-                COUNT(*)                                                                         AS games,
-                ROUND(100.0 * SUM(CASE WHEN result='victory' THEN 1 ELSE 0 END) / COUNT(*), 1) AS win_rate,
-                ROUND(100.0 * SUM(is_star_player) / COUNT(*), 1)                                AS star_rate,
-                ROUND(100.0 * COUNT(*) / (SELECT COUNT(*) FROM deduped), 2)                     AS pick_rate
-            FROM deduped
+                COUNT(*)                                                                          AS games,
+                ROUND(100.0 * SUM(CASE WHEN result='victory' THEN 1 ELSE 0 END) / COUNT(*), 1)  AS win_rate,
+                ROUND(100.0 * SUM(is_star_player) / COUNT(*), 1)                                 AS star_rate,
+                ROUND(100.0 * COUNT(*) / {total}, 2)                                             AS pick_rate
+            FROM community_battles
+            WHERE {where}
             GROUP BY brawler_name
             ORDER BY games DESC
             """,
+            params,
+        ).fetchall()
+
+
+def get_community_map_stats(mode=None, trophy_band=None, ranked_only=False, since=None) -> list[sqlite3.Row]:
+    where, params = _community_where(mode, trophy_band, ranked_only, since)
+    with get_conn() as conn:
+        return conn.execute(
+            f"""
+            SELECT map, mode,
+                COUNT(*) AS games,
+                ROUND(100.0 * SUM(CASE WHEN result='victory' THEN 1 ELSE 0 END) / COUNT(*), 1) AS win_rate,
+                ROUND(100.0 * SUM(is_star_player) / COUNT(*), 1) AS star_rate
+            FROM community_battles
+            WHERE {where} AND map != ''
+            GROUP BY map, mode
+            ORDER BY games DESC
+            """,
+            params,
+        ).fetchall()
+
+
+def get_community_mode_stats(trophy_band=None, since=None) -> list[sqlite3.Row]:
+    where, params = _community_where(trophy_band=trophy_band, since=since)
+    total = get_community_total(trophy_band=trophy_band, since=since)
+    if total == 0:
+        return []
+    with get_conn() as conn:
+        return conn.execute(
+            f"""
+            SELECT mode,
+                COUNT(*) AS games,
+                ROUND(100.0 * SUM(CASE WHEN result='victory' THEN 1 ELSE 0 END) / COUNT(*), 1) AS win_rate,
+                ROUND(100.0 * COUNT(*) / {total}, 1) AS play_rate
+            FROM community_battles
+            WHERE {where}
+            GROUP BY mode
+            ORDER BY games DESC
+            """,
+            params,
         ).fetchall()
 
 
