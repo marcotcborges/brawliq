@@ -7,7 +7,7 @@ DB_PATH = os.path.join(
     "brawliq.db",
 )
 MAX_TAGS_PER_USER = 4
-MAX_TOTAL_TAGS = 200
+MAX_TOTAL_TAGS = 1000
 
 
 def get_conn() -> sqlite3.Connection:
@@ -70,6 +70,7 @@ def init_db() -> None:
             "ALTER TABLE users ADD COLUMN reset_token TEXT",
             "ALTER TABLE users ADD COLUMN reset_token_expires TEXT",
             "ALTER TABLE player_tags ADD COLUMN first_seen_at TEXT",
+            "ALTER TABLE player_tags ADD COLUMN last_requested_at TEXT",
         ]:
             try:
                 conn.execute(stmt)
@@ -150,6 +151,21 @@ def _unique_username(conn: sqlite3.Connection, name: str, email: str) -> str:
 
 
 MAX_USERS = 100
+PUBLIC_USERNAME = "__public__"
+
+
+def get_public_user_id() -> int:
+    with get_conn() as conn:
+        row = conn.execute("SELECT id FROM users WHERE username = ?", (PUBLIC_USERNAME,)).fetchone()
+        if row:
+            return row["id"]
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO users (username, password_hash) VALUES (?, '')",
+            (PUBLIC_USERNAME,),
+        )
+        if cur.lastrowid:
+            return cur.lastrowid
+        return conn.execute("SELECT id FROM users WHERE username = ?", (PUBLIC_USERNAME,)).fetchone()["id"]
 
 
 def get_or_create_google_user(google_id: str, email: str, name: str) -> tuple[sqlite3.Row, bool]:
@@ -165,7 +181,7 @@ def get_or_create_google_user(google_id: str, email: str, name: str) -> tuple[sq
         if user:
             conn.execute("UPDATE users SET google_id = ?, last_login_at = datetime('now') WHERE id = ?", (google_id, user["id"]))
             return conn.execute("SELECT * FROM users WHERE id = ?", (user["id"],)).fetchone(), False
-        if conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] >= MAX_USERS:
+        if conn.execute("SELECT COUNT(*) FROM users WHERE username != ?", (PUBLIC_USERNAME,)).fetchone()[0] >= MAX_USERS:
             raise ValueError("BrawlIQ is currently at capacity. Try again later.")
         username = _unique_username(conn, name, email)
         conn.execute(
@@ -241,6 +257,78 @@ def remove_player_tag(user_id: int, tag: str) -> None:
             "DELETE FROM player_tags WHERE user_id = ? AND tag = ?",
             (user_id, tag),
         )
+
+
+def touch_player_tag(user_id: int, tag: str) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE player_tags SET last_requested_at = datetime('now') WHERE user_id = ? AND tag = ?",
+            (user_id, tag),
+        )
+
+
+def add_public_tag(tag: str) -> tuple[int, bool]:
+    """Add tag under the public user. Returns (pub_user_id, is_new_tag)."""
+    pub_id = get_public_user_id()
+    with get_conn() as conn:
+        existing = conn.execute(
+            "SELECT id FROM player_tags WHERE user_id = ? AND tag = ?", (pub_id, tag)
+        ).fetchone()
+        if existing:
+            conn.execute(
+                "UPDATE player_tags SET last_requested_at = datetime('now') WHERE user_id = ? AND tag = ?",
+                (pub_id, tag),
+            )
+            return pub_id, False
+        total = conn.execute("SELECT COUNT(*) FROM player_tags").fetchone()[0]
+        if total >= MAX_TOTAL_TAGS:
+            return pub_id, False
+        conn.execute(
+            "INSERT OR IGNORE INTO player_tags (user_id, tag, last_requested_at) VALUES (?, ?, datetime('now'))",
+            (pub_id, tag),
+        )
+        return pub_id, True
+
+
+def cleanup_stale_tags(inactive_days: int = 30) -> int:
+    """Remove public-user tags not requested in inactive_days. Returns count removed."""
+    pub_id = get_public_user_id()
+    with get_conn() as conn:
+        cur = conn.execute(
+            """DELETE FROM player_tags
+               WHERE user_id = ? AND (
+                   last_requested_at IS NULL OR
+                   last_requested_at < datetime('now', ? || ' days')
+               )""",
+            (pub_id, f"-{inactive_days}"),
+        )
+        removed = cur.rowcount
+        if removed:
+            conn.execute(
+                """DELETE FROM battles WHERE user_id = ? AND tag NOT IN (
+                    SELECT tag FROM player_tags WHERE user_id = ?
+                )""",
+                (pub_id, pub_id),
+            )
+            conn.execute(
+                """DELETE FROM player_snapshots WHERE user_id = ? AND tag NOT IN (
+                    SELECT tag FROM player_tags WHERE user_id = ?
+                )""",
+                (pub_id, pub_id),
+            )
+        return removed
+
+
+def get_active_public_tags() -> list[sqlite3.Row]:
+    """Return (id, tag) rows for public tags requested within the last 30 days."""
+    pub_id = get_public_user_id()
+    with get_conn() as conn:
+        return conn.execute(
+            """SELECT user_id AS id, tag FROM player_tags
+               WHERE user_id = ?
+                 AND last_requested_at >= datetime('now', '-30 days')""",
+            (pub_id,),
+        ).fetchall()
 
 
 # --- snapshot helpers ---

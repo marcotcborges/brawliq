@@ -31,6 +31,11 @@ from db.database import (
     get_total_battles_tracked,
     get_active_users,
     get_or_create_google_user,
+    get_public_user_id,
+    add_public_tag,
+    touch_player_tag,
+    cleanup_stale_tags,
+    get_active_public_tags,
 )
 from services.brawlstars import get_player, get_player_battlelog, parse_battlelog
 from services.google_auth import get_auth_url, exchange_code
@@ -67,6 +72,23 @@ def _background_scheduler():
                     pass
         except Exception:
             pass
+        try:
+            for row in get_active_public_tags():
+                try:
+                    pub_id = row["id"]
+                    tag = row["tag"]
+                    data = get_player(tag)
+                    save_snapshot(pub_id, tag, json.dumps(data))
+                    bl = get_player_battlelog(tag)
+                    save_battles(pub_id, tag, parse_battlelog(bl, tag))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            cleanup_stale_tags(inactive_days=30)
+        except Exception:
+            pass
 
 
 threading.Thread(target=_background_scheduler, daemon=True).start()
@@ -80,6 +102,9 @@ for key, default in [
     ("user_id", None),
     ("username", None),
     ("selected_tag", None),
+    ("public_tag", None),
+    ("public_data", None),
+    ("public_uid", None),
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
@@ -119,13 +144,148 @@ def _win_streaks(results: list) -> tuple[int, int]:
     return current, best
 
 
-# ── auth pages ────────────────────────────────────────────────────────────────
+# ── public profile (anonymous lookup) ────────────────────────────────────────
 
-def page_login():
+def _render_public_profile(pub_uid: int, tag: str, data: dict) -> None:
+    name = data.get("name", tag)
+    st.markdown(f"### {name}")
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Trophies", f"{data.get('trophies', 0):,}")
+    col2.metric("Highest trophies", f"{data.get('highestTrophies', 0):,}")
+    col3.metric("EXP level", data.get("expLevel", "—"))
+    club = data.get("club", {})
+    col4.metric("Club", club.get("name", "—") if club else "—")
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("3v3 victories", f"{data.get('3vs3Victories', 0):,}")
+    col2.metric("Solo victories", f"{data.get('soloVictories', 0):,}")
+    col3.metric("Duo victories", f"{data.get('duoVictories', 0):,}")
+
+    results = get_battle_results(pub_uid, tag, n=25)
+    if results:
+        st.divider()
+        last10 = results[:10]
+        dots = " ".join(
+            "🟢" if r["result"] == "victory" else ("⚫" if r["result"] == "draw" else "🔴")
+            for r in last10
+        )
+        st.markdown(f"**Recent form:** {dots}")
+        st.caption("Last 10 games — 🟢 Win  🔴 Loss  ⚫ Draw")
+        wins = sum(1 for r in results if r["result"] == "victory")
+        wr = round(100 * wins / len(results), 1)
+        col1, col2 = st.columns(2)
+        col1.metric("Battles tracked", len(results))
+        col2.metric("Win rate", f"{wr}%")
+
+    brawler_rows = get_brawler_stats(pub_uid, tag)
+    if brawler_rows:
+        st.divider()
+        st.subheader("Top brawlers")
+        df = pd.DataFrame([dict(r) for r in brawler_rows[:10]])
+        df.columns = ["Brawler", "Games", "Win Rate %", "Star Rate %"]
+        st.dataframe(df, use_container_width=True, hide_index=True)
+
+    st.info("Sign in with Google below to track this player long-term — full Insights, ranked breakdown, and background refresh every 30 minutes.")
+
+
+# ── home page (unauthenticated) ───────────────────────────────────────────────
+
+def page_home():
+    st.markdown(
+        """<script>
+(function(){
+  var e=document.querySelector('meta[name="description"]');
+  if(e)e.remove();
+  var m=document.createElement('meta');
+  m.name='description';
+  m.content='BrawlIQ — free Brawl Stars stats tracker. Look up any player tag instantly: win rates, brawler performance, map analytics, tilt detection, and community meta. No login required.';
+  document.head.appendChild(m);
+})();
+</script>""",
+        unsafe_allow_html=True,
+    )
+
     st.title("⚡ BrawlIQ")
-    st.markdown("### Track your Brawl Stars stats")
-    st.markdown("Sign in with your Google account to get started.")
-    st.link_button("Sign in with Google", get_auth_url(), use_container_width=True)
+    st.markdown(
+        "**Free Brawl Stars stats tracker.** "
+        "Look up any player tag instantly — no account needed. "
+        "Sign in to unlock long-term tracking, full Insights, and background refresh."
+    )
+
+    # ── public tag search ─────────────────────────────────────────────────────
+    with st.form("public_search_form"):
+        tag_input = st.text_input(
+            "Player tag",
+            placeholder="#ABC123",
+            label_visibility="collapsed",
+        )
+        searched = st.form_submit_button("Look up player", use_container_width=True, type="primary")
+
+    if searched and tag_input.strip():
+        raw = tag_input.strip().upper()
+        tag = raw if raw.startswith("#") else "#" + raw
+        with st.spinner("Fetching player data…"):
+            try:
+                pub_id = get_public_user_id()
+                data = get_player(tag)
+                save_snapshot(pub_id, tag, json.dumps(data))
+                bl = get_player_battlelog(tag)
+                save_battles(pub_id, tag, parse_battlelog(bl, tag))
+                add_public_tag(tag)
+                st.session_state.public_tag = tag
+                st.session_state.public_data = data
+                st.session_state.public_uid = pub_id
+                st.rerun()
+            except ValueError as exc:
+                st.error(str(exc))
+            except Exception as exc:
+                st.error(f"Could not find player: {exc}")
+
+    if st.session_state.public_tag and st.session_state.public_data:
+        st.divider()
+        _render_public_profile(
+            st.session_state.public_uid,
+            st.session_state.public_tag,
+            st.session_state.public_data,
+        )
+
+    # ── features ──────────────────────────────────────────────────────────────
+    st.divider()
+    st.markdown("## What BrawlIQ tracks")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.markdown("**📊 Win rates**\n\nBy brawler, mode, and map — see exactly where you win and where you struggle.")
+    c2.markdown("**🗺️ Map analytics**\n\nYour best and worst maps ranked by win rate across all game modes.")
+    c3.markdown("**⏰ Best time to play**\n\nWin rate broken down by hour of day and day of week.")
+    c4.markdown("**🔥 Tilt detection**\n\nSpot losing streaks inside sessions so you know when to take a break.")
+
+    st.divider()
+    st.markdown("## How it works")
+    st.markdown(
+        "BrawlIQ connects to the official **Brawl Stars API** and stores every battle it sees. "
+        "The longer you're tracked, the more history you build up. "
+        "Data refreshes automatically every 30 minutes for all active players.\n\n"
+        "**Player Tag** — your unique Brawl Stars ID, like `#ABC123`. "
+        "Find it in-game by tapping your profile picture."
+    )
+
+    total = get_total_battles_tracked()
+    if total > 0:
+        st.caption(f"⚡ **{total:,} battles** tracked so far across all BrawlIQ players")
+
+    # ── sign-in section ───────────────────────────────────────────────────────
+    st.divider()
+    st.markdown("## Unlock full analytics")
+    st.markdown(
+        "Sign in with Google to track up to **4 player tags** with the complete feature set:\n\n"
+        "- Full Insights tab: win rate trend, map performance, tilt analysis, best hour to play\n"
+        "- Ranked vs casual breakdown\n"
+        "- Personal brawler stats vs community average\n"
+        "- Background refresh every 30 minutes\n\n"
+        "> **Important:** Log in at least once every **30 days** to keep automatic tracking active "
+        "for your tags. Tags from inactive accounts stop being refreshed after 30 days."
+    )
+    st.link_button("Sign in with Google", get_auth_url(), use_container_width=True, type="primary")
 
 
 # ── dashboard sections ────────────────────────────────────────────────────────
@@ -661,6 +821,6 @@ if oauth_code and st.session_state.user_id is None:
         except Exception as exc:
             st.error(f"Sign-in failed: {exc}")
 elif st.session_state.user_id is None:
-    page_login()
+    page_home()
 else:
     page_dashboard()
