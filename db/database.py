@@ -50,6 +50,16 @@ def init_db() -> None:
                 data       TEXT    NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS community_players (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                tag             TEXT    NOT NULL UNIQUE,
+                first_seen_at   TEXT    NOT NULL DEFAULT (datetime('now')),
+                last_seen_at    TEXT    NOT NULL DEFAULT (datetime('now')),
+                last_fetched_at TEXT,
+                times_seen      INTEGER NOT NULL DEFAULT 1,
+                active          INTEGER NOT NULL DEFAULT 1
+            );
+
             CREATE TABLE IF NOT EXISTS community_battles (
                 id            INTEGER PRIMARY KEY AUTOINCREMENT,
                 battle_time   TEXT    NOT NULL,
@@ -716,6 +726,72 @@ def get_weekday_stats(user_id: int, tag: str, since: str | None = None, until: s
             """,
             params,
         ).fetchall()
+
+
+def upsert_community_players(tags: list[str]) -> None:
+    """Record player tags seen in battle logs; skip tags already tracked by signed-in users."""
+    if not tags:
+        return
+    with get_conn() as conn:
+        tracked = {r[0] for r in conn.execute("SELECT tag FROM player_tags").fetchall()}
+        to_upsert = [t for t in tags if t and t not in tracked]
+        if not to_upsert:
+            return
+        conn.executemany(
+            """INSERT INTO community_players (tag, first_seen_at, last_seen_at, times_seen, active)
+               VALUES (?, datetime('now'), datetime('now'), 1, 1)
+               ON CONFLICT(tag) DO UPDATE SET
+                   times_seen   = times_seen + 1,
+                   last_seen_at = datetime('now'),
+                   active       = 1""",
+            [(t,) for t in to_upsert],
+        )
+
+
+def get_community_players_to_fetch(limit: int = 10) -> list[str]:
+    """Return tags to actively refresh: never-fetched first, then by popularity."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT tag FROM community_players
+               WHERE active = 1
+                 AND (last_fetched_at IS NULL OR last_fetched_at < datetime('now', '-1 days'))
+               ORDER BY (last_fetched_at IS NOT NULL),  -- NULL first (never fetched)
+                        times_seen DESC,
+                        last_seen_at DESC
+               LIMIT ?""",
+            (limit,),
+        ).fetchall()
+        return [r["tag"] for r in rows]
+
+
+def mark_community_player_fetched(tag: str) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE community_players SET last_fetched_at = datetime('now') WHERE tag = ?",
+            (tag,),
+        )
+
+
+def cleanup_old_community_battles(days: int = 30) -> int:
+    """Delete community battle rows older than `days`. Returns count deleted."""
+    cutoff = (datetime.utcnow() - timedelta(days=days)).strftime("%Y%m%dT%H%M%S")
+    with get_conn() as conn:
+        cur = conn.execute(
+            "DELETE FROM community_battles WHERE battle_time < ?",
+            (cutoff,),
+        )
+        return cur.rowcount
+
+
+def cleanup_inactive_community_players(inactive_days: int = 60) -> int:
+    """Mark active=0 for players not seen in `inactive_days`. Returns count deactivated."""
+    with get_conn() as conn:
+        cur = conn.execute(
+            """UPDATE community_players SET active = 0
+               WHERE active = 1 AND last_seen_at < datetime('now', ? || ' days')""",
+            (f"-{inactive_days}",),
+        )
+        return cur.rowcount
 
 
 def get_battles_for_analysis(user_id: int, tag: str, since: str | None = None, until: str | None = None) -> list[sqlite3.Row]:
