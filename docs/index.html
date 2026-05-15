@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BrawlIQ — Free Brawl Stars Stats Tracker</title>
+  <meta name="description" content="BrawlIQ is a free Brawl Stars stats tracker. Look up any player tag instantly: win rates, brawler performance, map analytics, tilt detection, and community meta. No login required." />
+  <meta name="keywords" content="brawl stars stats, brawl stars tracker, brawl stars win rate, brawl stars player stats, brawl stars brawler stats, brawl stars map stats, brawliq" />
+  <meta name="robots" content="index, follow" />
+  <link rel="canonical" href="https://brawliq.fly.dev/" />
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://brawliq.fly.dev/" />
+  <meta property="og:title" content="BrawlIQ — Free Brawl Stars Stats Tracker" />
+  <meta property="og:description" content="Look up any Brawl Stars player tag instantly. Win rates, brawler performance, map analytics, tilt detection, and community meta. Free, no login required." />
+
+  <!-- Twitter Card -->
+  <meta name="twitter:card" content="summary" />
+  <meta name="twitter:title" content="BrawlIQ — Free Brawl Stars Stats Tracker" />
+  <meta name="twitter:description" content="Look up any Brawl Stars player tag. Win rates, brawler performance, map analytics, tilt detection. Free." />
+
+  <!-- Schema.org structured data -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "WebApplication",
+    "name": "BrawlIQ",
+    "url": "https://brawliq.fly.dev",
+    "description": "Free Brawl Stars stats tracker. Win rates, brawler performance, map analytics, tilt detection, and community meta.",
+    "applicationCategory": "GameApplication",
+    "operatingSystem": "Any",
+    "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+    "about": { "@type": "VideoGame", "name": "Brawl Stars" }
+  }
+  </script>
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:      #0d1117;
+      --bg2:     #161b22;
+      --accent:  #ffd60a;
+      --text:    #e6edf3;
+      --muted:   #8b949e;
+      --border:  #30363d;
+      --radius:  12px;
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+    }
+
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    /* ── nav ── */
+    nav {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 1rem 2rem;
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      background: rgba(13,17,23,0.95);
+      backdrop-filter: blur(8px);
+      z-index: 100;
+    }
+
+    .logo { font-size: 1.4rem; font-weight: 800; color: var(--accent); letter-spacing: -0.5px; }
+
+    .btn {
+      display: inline-block;
+      padding: 0.55rem 1.4rem;
+      border-radius: 8px;
+      font-weight: 600;
+      font-size: 0.9rem;
+      cursor: pointer;
+      transition: opacity 0.15s;
+    }
+    .btn:hover { opacity: 0.82; text-decoration: none; }
+    .btn-primary  { background: var(--accent); color: #000; }
+    .btn-outline  { border: 1px solid var(--border); color: var(--text); }
+    .btn-lg       { padding: 0.8rem 2.4rem; font-size: 1rem; }
+
+    /* ── hero ── */
+    .hero {
+      text-align: center;
+      padding: 5rem 1.5rem 4rem;
+      max-width: 760px;
+      margin: 0 auto;
+    }
+
+    .badge {
+      display: inline-block;
+      background: rgba(255,214,10,0.1);
+      border: 1px solid rgba(255,214,10,0.3);
+      color: var(--accent);
+      padding: 0.3rem 0.9rem;
+      border-radius: 999px;
+      font-size: 0.78rem;
+      font-weight: 700;
+      margin-bottom: 1.5rem;
+      letter-spacing: 0.6px;
+      text-transform: uppercase;
+    }
+
+    .hero h1 {
+      font-size: clamp(2rem, 5vw, 3.2rem);
+      font-weight: 800;
+      line-height: 1.15;
+      margin-bottom: 1.2rem;
+      letter-spacing: -1px;
+    }
+    .hero h1 span { color: var(--accent); }
+
+    .hero p {
+      font-size: 1.1rem;
+      color: var(--muted);
+      max-width: 560px;
+      margin: 0 auto 2rem;
+    }
+
+    .ctas { display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; }
+
+    /* ── sections ── */
+    section { padding: 4rem 1.5rem; }
+
+    .label {
+      text-align: center;
+      color: var(--accent);
+      font-weight: 700;
+      font-size: 0.76rem;
+      letter-spacing: 1.5px;
+      text-transform: uppercase;
+      margin-bottom: 0.6rem;
+    }
+
+    h2 {
+      text-align: center;
+      font-size: clamp(1.5rem, 3vw, 2rem);
+      font-weight: 800;
+      margin-bottom: 0.6rem;
+      letter-spacing: -0.5px;
+    }
+
+    .sub {
+      text-align: center;
+      color: var(--muted);
+      margin-bottom: 2.5rem;
+      max-width: 520px;
+      margin-left: auto;
+      margin-right: auto;
+    }
+
+    /* ── feature grid ── */
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+      gap: 1.1rem;
+      max-width: 920px;
+      margin: 0 auto;
+    }
+
+    .card {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1.4rem;
+    }
+    .card:hover { border-color: rgba(255,214,10,0.35); }
+
+    .card-icon { font-size: 1.8rem; margin-bottom: 0.6rem; }
+    .card h3   { font-size: 0.95rem; font-weight: 700; margin-bottom: 0.35rem; }
+    .card p    { font-size: 0.85rem; color: var(--muted); line-height: 1.5; }
+
+    /* ── steps ── */
+    .steps {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 2rem;
+      max-width: 800px;
+      margin: 0 auto;
+    }
+
+    .step { text-align: center; }
+
+    .step-num {
+      width: 48px; height: 48px;
+      border-radius: 50%;
+      background: rgba(255,214,10,0.12);
+      border: 2px solid var(--accent);
+      color: var(--accent);
+      font-weight: 800; font-size: 1.1rem;
+      display: flex; align-items: center; justify-content: center;
+      margin: 0 auto 1rem;
+    }
+
+    .step h3 { font-size: 0.95rem; font-weight: 700; margin-bottom: 0.35rem; }
+    .step p  { font-size: 0.85rem; color: var(--muted); }
+
+    code { color: var(--accent); font-size: 0.9em; }
+
+    /* ── cta banner ── */
+    .cta-wrap { max-width: 640px; margin: 0 auto; }
+
+    .cta-banner {
+      background: linear-gradient(135deg, rgba(255,214,10,0.07), rgba(255,107,53,0.07));
+      border: 1px solid rgba(255,214,10,0.2);
+      border-radius: 16px;
+      padding: 3rem 2rem;
+      text-align: center;
+    }
+
+    .cta-banner h2 { margin-bottom: 0.5rem; }
+    .cta-banner > p { color: var(--muted); margin-bottom: 1.75rem; }
+
+    .perks {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 0.45rem;
+      text-align: left;
+      max-width: 300px;
+      margin: 0 auto 2rem;
+      font-size: 0.88rem;
+    }
+
+    .perks li { display: flex; gap: 0.6rem; }
+    .perks li::before { content: "✓"; color: var(--accent); font-weight: 700; flex-shrink: 0; }
+
+    /* ── faq ── */
+    .faq-list { max-width: 680px; margin: 0 auto; }
+
+    details {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      margin-bottom: 0.7rem;
+      overflow: hidden;
+    }
+    details[open] { border-color: rgba(255,214,10,0.3); }
+
+    summary {
+      padding: 0.9rem 1.2rem;
+      font-weight: 600;
+      font-size: 0.95rem;
+      cursor: pointer;
+      list-style: none;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      user-select: none;
+    }
+    summary::-webkit-details-marker { display: none; }
+    summary::after { content: "+"; font-size: 1.2rem; color: var(--muted); }
+    details[open] summary::after { content: "−"; }
+
+    .faq-body {
+      padding: 0 1.2rem 1rem;
+      color: var(--muted);
+      font-size: 0.875rem;
+      line-height: 1.65;
+    }
+
+    /* ── footer ── */
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 2rem 1.5rem;
+      text-align: center;
+      color: var(--muted);
+      font-size: 0.8rem;
+      line-height: 1.8;
+    }
+    footer a { color: var(--muted); }
+    footer a:hover { color: var(--accent); }
+
+    .alt-bg {
+      background: var(--bg2);
+      border-top: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+    }
+
+    @media (max-width: 600px) {
+      nav { padding: 0.75rem 1rem; }
+      .hero { padding: 3.5rem 1rem 3rem; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- NAV -->
+  <nav aria-label="Main navigation">
+    <span class="logo">⚡ BrawlIQ</span>
+    <a href="https://brawliq.fly.dev" class="btn btn-primary">Open App →</a>
+  </nav>
+
+  <!-- HERO -->
+  <header class="hero">
+    <div class="badge">Free · No login required</div>
+    <h1>Track your <span>Brawl Stars</span> stats like a pro</h1>
+    <p>
+      Look up any player tag instantly. Win rates, brawler performance, map analytics,
+      tilt detection, and community meta — all powered by the official Brawl Stars API.
+    </p>
+    <div class="ctas">
+      <a href="https://brawliq.fly.dev" class="btn btn-primary btn-lg">Look up a player →</a>
+      <a href="https://brawliq.fly.dev" class="btn btn-outline btn-lg">Sign in free</a>
+    </div>
+  </header>
+
+  <!-- FEATURES -->
+  <section aria-labelledby="features-heading">
+    <p class="label">Features</p>
+    <h2 id="features-heading">Everything you need to improve</h2>
+    <p class="sub">Built on the official Brawl Stars API. All numbers are from real battle data — nothing estimated.</p>
+
+    <div class="grid">
+      <div class="card">
+        <div class="card-icon">📊</div>
+        <h3>Win Rate Analytics</h3>
+        <p>Win rate by brawler, mode, and map. Find exactly where you shine and where you bleed trophies.</p>
+      </div>
+      <div class="card">
+        <div class="card-icon">🗺️</div>
+        <h3>Map Performance</h3>
+        <p>Your best and worst maps ranked by win rate. Stop picking bad maps in ranked when you have data to guide you.</p>
+      </div>
+      <div class="card">
+        <div class="card-icon">⏰</div>
+        <h3>Best Time to Play</h3>
+        <p>Win rate broken down by hour of day and day of week. Know when you actually play your best Brawl Stars.</p>
+      </div>
+      <div class="card">
+        <div class="card-icon">🔥</div>
+        <h3>Tilt Detection</h3>
+        <p>BrawlIQ identifies sessions where a losing streak spiraled out of control — so you know when to close the game.</p>
+      </div>
+      <div class="card">
+        <div class="card-icon">🏆</div>
+        <h3>Ranked Breakdown</h3>
+        <p>Ranked vs casual win rate and your best brawlers specifically in ranked matches.</p>
+      </div>
+      <div class="card">
+        <div class="card-icon">🌍</div>
+        <h3>Community Meta</h3>
+        <p>Real win rate, pick rate, and star rate across all BrawlIQ players — the actual meta, not another tier list.</p>
+      </div>
+      <div class="card">
+        <div class="card-icon">🔄</div>
+        <h3>Auto Refresh</h3>
+        <p>Sign in once and your battles are fetched automatically every 30 minutes. Always fresh, zero effort.</p>
+      </div>
+      <div class="card">
+        <div class="card-icon">📈</div>
+        <h3>Win Rate Trend</h3>
+        <p>Weekly win rate chart. See if you're actually improving over time or just going in circles.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- HOW IT WORKS -->
+  <section class="alt-bg" aria-labelledby="how-heading">
+    <p class="label">How it works</p>
+    <h2 id="how-heading">Three steps to better stats</h2>
+    <p class="sub">No install. No download. Works in any browser, on any device.</p>
+
+    <div class="steps">
+      <div class="step">
+        <div class="step-num">1</div>
+        <h3>Enter your player tag</h3>
+        <p>Type your Brawl Stars tag (e.g. <code>#ABC123</code>). Find it in-game by tapping your profile picture at the top left of the home screen.</p>
+      </div>
+      <div class="step">
+        <div class="step-num">2</div>
+        <h3>We fetch your battles</h3>
+        <p>BrawlIQ pulls your battle history from the official Supercell API and stores every match. The longer you're tracked, the more history you build.</p>
+      </div>
+      <div class="step">
+        <div class="step-num">3</div>
+        <h3>Get actionable insights</h3>
+        <p>Win rates by brawler and map, tilt sessions, best hours to play, ranked breakdown — everything in one clean dashboard.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- CTA -->
+  <section>
+    <div class="cta-wrap">
+      <div class="cta-banner">
+        <h2>Ready to see your stats?</h2>
+        <p>No account needed to look up any player. Sign in to unlock long-term tracking.</p>
+        <ul class="perks">
+          <li>Track up to 4 player tags (great for alt accounts)</li>
+          <li>Full Insights with all analytics</li>
+          <li>Background refresh every 30 minutes</li>
+          <li>Personal vs community comparison</li>
+          <li>Completely free, always</li>
+        </ul>
+        <a href="https://brawliq.fly.dev" class="btn btn-primary btn-lg">Open BrawlIQ free →</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- FAQ -->
+  <section class="alt-bg" aria-labelledby="faq-heading">
+    <p class="label">FAQ</p>
+    <h2 id="faq-heading">Common questions</h2>
+    <p class="sub" style="margin-bottom: 2rem;">Everything you need to know about BrawlIQ.</p>
+
+    <div class="faq-list">
+      <details>
+        <summary>Is BrawlIQ really free?</summary>
+        <div class="faq-body">Yes, completely free. No premium tier, no hidden fees. You can look up any player tag without even creating an account.</div>
+      </details>
+      <details>
+        <summary>Where does the data come from?</summary>
+        <div class="faq-body">All data comes directly from the official Brawl Stars API by Supercell. BrawlIQ doesn't estimate or guess anything — every number reflects real battle data.</div>
+      </details>
+      <details>
+        <summary>How much battle history will I have?</summary>
+        <div class="faq-body">The Brawl Stars API returns your last 25 battles per fetch. BrawlIQ stores every batch it retrieves, so the longer you're tracked, the more history you accumulate. Check in regularly to avoid gaps in your data.</div>
+      </details>
+      <details>
+        <summary>Do I need to log in?</summary>
+        <div class="faq-body">No — you can look up any player tag without creating an account. Sign in with Google to save up to 4 tags and get automatic background refresh every 30 minutes.</div>
+      </details>
+      <details>
+        <summary>What is a Player Tag?</summary>
+        <div class="faq-body">Your unique Brawl Stars identifier, like <code>#ABC123</code>. Find it in-game by tapping your profile picture at the top left of the home screen.</div>
+      </details>
+      <details>
+        <summary>What is the Community Meta?</summary>
+        <div class="faq-body">Aggregated win rate, pick rate, and star rate across all BrawlIQ players. Each player tag is counted only once to prevent duplicate data. The more players use BrawlIQ, the more accurate and representative the meta becomes.</div>
+      </details>
+      <details>
+        <summary>What is tilt detection?</summary>
+        <div class="faq-body">BrawlIQ groups your battles into sessions (battles within 30 minutes of each other) and flags any session that had a losing streak of 4 or more. It's a reminder to step away when things are going badly rather than digging a deeper hole.</div>
+      </details>
+      <details>
+        <summary>Is BrawlIQ affiliated with Supercell?</summary>
+        <div class="faq-body">No. BrawlIQ is a fan-made tool that uses the public Brawl Stars API. It is not affiliated with, endorsed by, or connected to Supercell in any way.</div>
+      </details>
+    </div>
+  </section>
+
+  <!-- FOOTER -->
+  <footer>
+    <p><a href="https://brawliq.fly.dev">⚡ BrawlIQ</a> — Free Brawl Stars Stats Tracker</p>
+    <p>Fan-made tool · Not affiliated with Supercell · Built by <a href="https://github.com/marcotcborges">martulio</a></p>
+  </footer>
+
+</body>
+</html>
