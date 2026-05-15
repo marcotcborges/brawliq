@@ -145,6 +145,22 @@ def _win_streaks(results: list) -> tuple[int, int]:
     return current, best
 
 
+_RANK_LABELS = {
+    0: "Unranked",
+    1: "Bronze I",   2: "Bronze II",   3: "Bronze III",
+    4: "Silver I",   5: "Silver II",   6: "Silver III",
+    7: "Gold I",     8: "Gold II",     9: "Gold III",
+    10: "Diamond I", 11: "Diamond II", 12: "Diamond III",
+    13: "Mythic I",  14: "Mythic II",  15: "Mythic III",
+    16: "Legendary I", 17: "Legendary II", 18: "Legendary III",
+    19: "Masters",
+}
+
+
+def _rank_label(rank: int) -> str:
+    return _RANK_LABELS.get(rank, f"Rank {rank}")
+
+
 # ── public profile (anonymous lookup) ────────────────────────────────────────
 
 def _render_public_profile(pub_uid: int, tag: str, data: dict) -> None:
@@ -291,7 +307,9 @@ def page_home():
 
 # ── dashboard sections ────────────────────────────────────────────────────────
 
-def _render_profile(data: dict, fetched_at: str, since: str | None) -> None:
+def _render_profile(data: dict, fetched_at: str, since: str | None, brawlers_by_name: dict | None = None) -> None:
+    brawlers_by_name = brawlers_by_name or {}
+
     col_date, _ = st.columns([2, 1])
     col_date.caption(f"Last updated: {fetched_at} UTC")
     if since:
@@ -315,6 +333,33 @@ def _render_profile(data: dict, fetched_at: str, since: str | None) -> None:
     col1.metric("3v3 victories", f"{data.get('3vs3Victories', 0):,}")
     col2.metric("Solo victories", f"{data.get('soloVictories', 0):,}")
     col3.metric("Duo victories", f"{data.get('duoVictories', 0):,}")
+
+    # ── ranked ────────────────────────────────────────────────────────────────
+    ranked_cur = data.get("rankedRank", 0)
+    ranked_season = data.get("highestSeasonRankedRank", 0)
+    ranked_alltime = data.get("highestAllTimeRankedRank", 0)
+    if ranked_cur or ranked_season or ranked_alltime:
+        st.divider()
+        st.subheader("Ranked")
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Current rank", _rank_label(ranked_cur))
+        col2.metric("Best this season", _rank_label(ranked_season))
+        col3.metric("Best all-time", _rank_label(ranked_alltime))
+
+    # ── win streaks from brawler data ─────────────────────────────────────────
+    if brawlers_by_name:
+        cur_streaks = [(name, b.get("currentWinStreak", 0)) for name, b in brawlers_by_name.items() if b.get("currentWinStreak", 0) > 0]
+        max_streaks = [(name, b.get("maxWinStreak", 0)) for name, b in brawlers_by_name.items() if b.get("maxWinStreak", 0) > 0]
+        if cur_streaks or max_streaks:
+            st.divider()
+            st.subheader("Win streaks")
+            col1, col2 = st.columns(2)
+            if cur_streaks:
+                best_cur = max(cur_streaks, key=lambda x: x[1])
+                col1.metric("Current streak", best_cur[1], f"with {best_cur[0].title()}")
+            if max_streaks:
+                best_max = max(max_streaks, key=lambda x: x[1])
+                col2.metric("Best streak ever", best_max[1], f"with {best_max[0].title()}")
 
 
 def _render_my_stats(user_id: int, tag: str, since: str | None = None, until: str | None = None) -> None:
@@ -353,7 +398,8 @@ def _render_my_stats(user_id: int, tag: str, since: str | None = None, until: st
         st.dataframe(df, use_container_width=True, hide_index=True)
 
 
-def _render_my_brawlers(user_id: int, tag: str, since: str | None = None, until: str | None = None) -> None:
+def _render_my_brawlers(user_id: int, tag: str, brawlers_by_name: dict | None = None, since: str | None = None, until: str | None = None) -> None:
+    brawlers_by_name = brawlers_by_name or {}
     ranked_only = st.toggle("Ranked only", key="ranked_toggle")
     rows = get_brawler_stats(user_id, tag, ranked_only=ranked_only, since=since, until=until)
 
@@ -385,24 +431,70 @@ def _render_my_brawlers(user_id: int, tag: str, since: str | None = None, until:
             if gem["Win Rate %"] >= 55 and gem["Brawler"] != best["Brawler"]:
                 st.info(f"**Hidden gem:** {gem['Brawler']} — {gem['Win Rate %']}% win rate but only {int(gem['Games'])} games played. Play this more!")
 
-        # vs community comparison
-        comm_rows = get_community_brawler_stats()
-        if comm_rows:
-            comm_df = pd.DataFrame([dict(r) for r in comm_rows])[["brawler_name", "win_rate"]]
-            comm_df.columns = ["Brawler", "Community Win Rate %"]
-            merged = df.merge(comm_df, on="Brawler", how="left")
-            merged["vs Community"] = (merged["Win Rate %"] - merged["Community Win Rate %"]).round(1)
-            merged["vs Community"] = merged["vs Community"].apply(
-                lambda x: f"+{x}%" if x > 0 else f"{x}%" if pd.notna(x) else "—"
-            )
-            display = merged[["Brawler", "Games", "Win Rate %", "Star Rate %", "vs Community"]]
-            st.subheader("Full table")
-            st.dataframe(display, use_container_width=True, hide_index=True)
-        else:
-            st.dataframe(df, use_container_width=True, hide_index=True)
-    else:
-        st.dataframe(df, use_container_width=True, hide_index=True)
+    # ── full table with power + streaks ───────────────────────────────────────
+    comm_rows = get_community_brawler_stats()
+    display = df.copy()
+    if comm_rows:
+        comm_df = pd.DataFrame([dict(r) for r in comm_rows])[["brawler_name", "win_rate"]]
+        comm_df.columns = ["Brawler", "Community Win Rate %"]
+        display = display.merge(comm_df, on="Brawler", how="left")
+        display["vs Community"] = (display["Win Rate %"] - display["Community Win Rate %"]).round(1)
+        display["vs Community"] = display["vs Community"].apply(
+            lambda x: f"+{x}%" if x > 0 else f"{x}%" if pd.notna(x) else "—"
+        )
+        display = display[["Brawler", "Games", "Win Rate %", "Star Rate %", "vs Community"]]
+
+    if brawlers_by_name:
+        display["Power"] = display["Brawler"].apply(lambda n: brawlers_by_name.get(n, {}).get("power", "—"))
+        display["Cur. Streak"] = display["Brawler"].apply(lambda n: brawlers_by_name.get(n, {}).get("currentWinStreak", 0))
+        display["Max Streak"] = display["Brawler"].apply(lambda n: brawlers_by_name.get(n, {}).get("maxWinStreak", 0))
+
+    st.subheader("Full table")
+    st.dataframe(display, use_container_width=True, hide_index=True)
+
+    if not qualified.empty:
         st.caption("Play at least 5 games with a brawler to unlock podium insights.")
+
+    # ── upgrade recommendations ───────────────────────────────────────────────
+    if brawlers_by_name and not qualified.empty:
+        st.divider()
+        st.subheader("🎯 Focus recommendations")
+        suggestions = []
+        for _, row in qualified.iterrows():
+            name = row["Brawler"]
+            info = brawlers_by_name.get(name, {})
+            power = info.get("power", 0)
+            gadgets = len(info.get("gadgets", []))
+            star_powers = len(info.get("starPowers", []))
+            win_rate = row["Win Rate %"]
+            games = int(row["Games"])
+
+            if power == 0:
+                continue
+
+            tips = []
+            if power < 7 and gadgets == 0:
+                tips.append("reach power 7 to unlock gadget")
+            elif power < 9 and star_powers == 0:
+                tips.append("reach power 9 to unlock star power")
+            elif power < 11:
+                tips.append(f"upgrade from power {power} to 11")
+
+            if win_rate >= 55 and tips:
+                suggestions.append({
+                    "Brawler": name.title(),
+                    "Win Rate %": win_rate,
+                    "Games": games,
+                    "Power": power,
+                    "Tip": tips[0].capitalize(),
+                })
+
+        if suggestions:
+            sdf = pd.DataFrame(sorted(suggestions, key=lambda x: x["Win Rate %"], reverse=True))
+            st.caption("Brawlers where you already win often but haven't maxed out yet — worth the investment.")
+            st.dataframe(sdf, use_container_width=True, hide_index=True)
+        else:
+            st.caption("No upgrade recommendations right now — play more games with each brawler to unlock suggestions.")
 
 
 def _render_ranked(user_id: int, tag: str, since: str | None = None, until: str | None = None) -> None:
@@ -746,15 +838,18 @@ def page_dashboard():
         elif filter_n:
             data_since = get_nth_battle_time(user["id"], selected, filter_n)
 
+        snapshot = get_latest_snapshot(user["id"], selected)
+        tracking_since = get_earliest_tracking_date(user["id"], selected)
+        snap_data = json.loads(snapshot["data"]) if snapshot else {}
+        brawlers_by_name = {b["name"]: b for b in snap_data.get("brawlers", [])}
+
         sub_profile, sub_stats, sub_brawlers, sub_ranked, sub_insights = st.tabs(
             ["Profile", "Stats", "Brawler Performance", "Ranked", "Insights"]
         )
 
         with sub_profile:
-            snapshot = get_latest_snapshot(user["id"], selected)
-            tracking_since = get_earliest_tracking_date(user["id"], selected)
             if snapshot:
-                _render_profile(json.loads(snapshot["data"]), snapshot["fetched_at"], tracking_since)
+                _render_profile(snap_data, snapshot["fetched_at"], tracking_since, brawlers_by_name)
             else:
                 st.info("Hit **Refresh** to load this player's stats.")
 
@@ -762,7 +857,7 @@ def page_dashboard():
             _render_my_stats(user["id"], selected, since=data_since, until=data_until)
 
         with sub_brawlers:
-            _render_my_brawlers(user["id"], selected, since=data_since, until=data_until)
+            _render_my_brawlers(user["id"], selected, brawlers_by_name, since=data_since, until=data_until)
 
         with sub_ranked:
             _render_ranked(user["id"], selected, since=data_since, until=data_until)
