@@ -457,18 +457,21 @@ def get_battle_results(user_id: int, tag: str, n: int = 500, since: str | None =
 
 def get_community_brawler_stats(ranked_only: bool = False) -> list[sqlite3.Row]:
     type_filter = "AND type IN ('ranked','soloRanked','teamRanked')" if ranked_only else ""
-    base_filter = f"result IS NOT NULL {type_filter}"
     with get_conn() as conn:
         return conn.execute(
             f"""
+            WITH deduped AS (
+                SELECT DISTINCT tag, battle_time, brawler_name, result, is_star_player, type
+                FROM battles
+                WHERE result IS NOT NULL {type_filter}
+            )
             SELECT
                 brawler_name,
-                COUNT(*)                                                                  AS games,
+                COUNT(*)                                                                         AS games,
                 ROUND(100.0 * SUM(CASE WHEN result='victory' THEN 1 ELSE 0 END) / COUNT(*), 1) AS win_rate,
-                ROUND(100.0 * SUM(is_star_player) / COUNT(*), 1)                         AS star_rate,
-                ROUND(100.0 * COUNT(*) / (SELECT COUNT(*) FROM battles WHERE {base_filter}), 2) AS pick_rate
-            FROM battles
-            WHERE {base_filter}
+                ROUND(100.0 * SUM(is_star_player) / COUNT(*), 1)                                AS star_rate,
+                ROUND(100.0 * COUNT(*) / (SELECT COUNT(*) FROM deduped), 2)                     AS pick_rate
+            FROM deduped
             GROUP BY brawler_name
             ORDER BY games DESC
             """,
@@ -478,7 +481,7 @@ def get_community_brawler_stats(ranked_only: bool = False) -> list[sqlite3.Row]:
 def get_total_battles_tracked() -> int:
     with get_conn() as conn:
         return conn.execute(
-            "SELECT COUNT(*) FROM battles WHERE result IS NOT NULL"
+            "SELECT COUNT(*) FROM (SELECT DISTINCT tag, battle_time FROM battles WHERE result IS NOT NULL)"
         ).fetchone()[0]
 
 
