@@ -44,11 +44,7 @@ from db.database import (
     get_community_available_trophy_bands,
     get_community_map_stats,
     get_community_mode_stats,
-    upsert_community_players,
-    get_community_players_to_fetch,
-    mark_community_player_fetched,
     cleanup_old_community_battles,
-    cleanup_inactive_community_players,
     TROPHY_BAND_LABELS,
 )
 from services.brawlstars import get_player, get_player_battlelog, parse_battlelog, parse_battlelog_all_players
@@ -85,7 +81,8 @@ def _background_scheduler():
                     band = get_trophy_band(data.get("trophies", 0))
                     all_obs = parse_battlelog_all_players(bl, tag)
                     save_community_battles(all_obs, band)
-                    upsert_community_players([o["player_tag"] for o in all_obs if o.get("player_tag")])
+                    for t in {o["player_tag"] for o in all_obs if o.get("player_tag")}:
+                        add_public_tag(t)
                 except Exception:
                     pass
         except Exception:
@@ -102,38 +99,15 @@ def _background_scheduler():
                     band = get_trophy_band(data.get("trophies", 0))
                     all_obs = parse_battlelog_all_players(bl, tag)
                     save_community_battles(all_obs, band)
-                    upsert_community_players([o["player_tag"] for o in all_obs if o.get("player_tag")])
+                    for t in {o["player_tag"] for o in all_obs if o.get("player_tag")}:
+                        add_public_tag(t)
                 except Exception:
                     pass
         except Exception:
             pass
-        # actively fetch battle logs for community-discovered players
-        try:
-            for comm_tag in get_community_players_to_fetch(limit=10):
-                try:
-                    bl = get_player_battlelog(comm_tag)
-                    # use band=None; we don't make an extra player fetch to get trophies
-                    all_obs = parse_battlelog_all_players(bl, comm_tag)
-                    # only save observations for this specific player (we already have others)
-                    own_obs = [o for o in all_obs if o.get("player_tag", "").upper() == comm_tag.upper()]
-                    save_community_battles(own_obs, None)
-                    upsert_community_players([o["player_tag"] for o in all_obs if o.get("player_tag")])
-                    mark_community_player_fetched(comm_tag)
-                except Exception:
-                    mark_community_player_fetched(comm_tag)  # avoid retrying a broken tag immediately
-        except Exception:
-            pass
-        # cleanup
         try:
             cleanup_stale_tags(inactive_days=30)
-        except Exception:
-            pass
-        try:
             cleanup_old_community_battles(days=30)
-        except Exception:
-            pass
-        try:
-            cleanup_inactive_community_players(inactive_days=60)
         except Exception:
             pass
 
@@ -173,8 +147,8 @@ def _fetch_and_store(user_id: int, tag: str) -> dict:
     band = get_trophy_band(data.get("trophies", 0))
     all_obs = parse_battlelog_all_players(bl, tag)
     save_community_battles(all_obs, band)
-    discovered = list({o["player_tag"] for o in all_obs if o.get("player_tag")})
-    upsert_community_players(discovered)
+    for t in {o["player_tag"] for o in all_obs if o.get("player_tag")}:
+        add_public_tag(t)
     return data
 
 
